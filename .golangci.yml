@@ -1,0 +1,31 @@
+# golangci-lint 配置（v2 格式，golangci-lint >= 2.0）。
+# 与 core 仓同策略：保守集合起步（棘轮只收紧不放宽）；新增 linter 先本地清零再进本文件。
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet        # 官方 vet 检查
+    - staticcheck  # SA/QF 静态检查
+    - ineffassign  # 无效赋值
+    - errcheck     # 未处理错误（仅报告无 _ 显式忽略）
+  settings:
+    staticcheck:
+      # ST1005（错误串风格）等样式类检查暂不阻塞——中文错误串为主，逐步收敛
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1005
+        - -QF1012
+    errcheck:
+      # best-effort 调用（fire-and-forget）已按项目惯例显式 _ = 忽略
+      check-type-assertions: false
+
+run:
+  timeout: 5m
+
+issues:
+  # 现阶段零豁免：发现即修（棘轮从 0 开始）
+  max-issues-per-linter: 0
+  max-same-issues: 0

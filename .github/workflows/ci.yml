@@ -1,0 +1,31 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: go.sum
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+      # lint 棘轮（.golangci.yml 从 0 issues 起步，只收紧不放宽）
+      - name: Lint (golangci-lint)
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.14
+          args: --timeout 9m
+      - name: Dep guard(p2p 为生态叶子仓,禁依赖任何兄弟模块)
+        run: |
+          BAD=$(go list -deps ./... | grep -E '^github\.com/filescodebox/(contracts|core|server|frontend|fnos|desktop|charts)' || true)
+          if [ -n "$BAD" ]; then echo "✗ p2p 违规依赖:"; echo "$BAD"; exit 1; fi
+          echo "✓ 依赖方向合规"

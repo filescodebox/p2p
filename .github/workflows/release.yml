@@ -1,0 +1,51 @@
+name: Release
+# 打 v* tag → 多架构镜像推 ghcr.io/filescodebox/p2p(amd64+arm64)。
+# p2p 为服务器形态,与 server 仓一致走镜像分发,无二进制跨仓回挂。
+# 注意:新镜像包默认 private,首个 release 后需在 GitHub Packages 页手动 flip public
+# (fnos 踩过的坑)。provenance=false:buildx 默认认证清单会使 GitHub Packages 页
+# 渲染 500(拉取不受影响,仅 Web UI 坏)。
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/filescodebox/p2p
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.meta.outputs.date }}
+            GOPROXY=https://proxy.golang.org,direct
