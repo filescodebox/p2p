@@ -25,6 +25,17 @@ announce:
   max_per_node: 1000
   max_ttl: 168h
 
+# WS 信令信道(M3 设备直传;默认开——准入由节点签名把守,关闭仅影响直传配对)。
+# 端点 GET /v1/channel/{code_hash},协议契约见 README。
+signaling:
+  enabled: true
+  session_ttl: 10m      # 会话最长生命周期(含等待配对)
+  idle_timeout: 2m      # 连接空闲上限(pong 与数据帧均续期)
+  hello_timeout: 10s    # 接入后交 hello 的时限
+  max_frame_bytes: 16384
+  max_sessions_per_node: 8
+  max_total_sessions: 1024
+
 admin:
   # 管理端口令。留空 = 管理 API 整体禁用。生产必须经环境变量注入。
   password: ""

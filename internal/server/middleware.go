@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bufio"
 	"crypto/subtle"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -48,6 +50,16 @@ type statusRecorder struct {
 func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack 透传底层连接接管(WS 升级必需)。嵌入接口只提升该接口自身的方法,
+// Hijacker 不在其中——不透传的话 gorilla 升级直接失败(bad handshake)。
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("底层 ResponseWriter 未实现 http.Hijacker")
+	}
+	return h.Hijack()
 }
 
 // statusLabel 归一化状态码标签(2xx/4xx/5xx 细分到百位,控基数)。

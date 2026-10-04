@@ -12,11 +12,13 @@ import (
 type Metrics struct {
 	reg *prometheus.Registry
 
-	httpRequests   *prometheus.CounterVec // method, route, code
-	resolveTotal   *prometheus.CounterVec // result: hit|miss
-	rateLimited    prometheus.Counter
-	nodesActive    prometheus.Gauge
-	announcesGauge prometheus.Gauge
+	httpRequests      *prometheus.CounterVec // method, route, code
+	resolveTotal      *prometheus.CounterVec // result: hit|miss
+	rateLimited       prometheus.Counter
+	nodesActive       prometheus.Gauge
+	announcesGauge    prometheus.Gauge
+	signalingSessions prometheus.Gauge
+	signalingJoins    *prometheus.CounterVec // result: waiting|paired|busy|rejected
 }
 
 // NewMetrics 构造指标集。
@@ -39,8 +41,20 @@ func NewMetrics() *Metrics {
 	m.announcesGauge = f.NewGauge(prometheus.GaugeOpts{
 		Name: "p2p_announces_active", Help: "当前有效公告数",
 	})
+	m.signalingSessions = f.NewGauge(prometheus.GaugeOpts{
+		Name: "p2p_signaling_sessions_active", Help: "当前活跃信令会话数(含等待配对)",
+	})
+	m.signalingJoins = f.NewCounterVec(prometheus.CounterOpts{
+		Name: "p2p_signaling_joins_total", Help: "信令信道接入计数",
+	}, []string{"result"})
 	return m
 }
+
+// SignalingSessions 实现 signaling.Metrics（会话仪表增减）。
+func (m *Metrics) SignalingSessions(delta int) { m.signalingSessions.Add(float64(delta)) }
+
+// SignalingJoin 实现 signaling.Metrics（接入计数）。
+func (m *Metrics) SignalingJoin(result string) { m.signalingJoins.WithLabelValues(result).Inc() }
 
 // SetGauges 由清扫循环周期刷新活跃量仪表。
 func (m *Metrics) SetGauges(nodes, announces int) {

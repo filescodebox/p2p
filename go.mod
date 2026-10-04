@@ -3,6 +3,7 @@ module github.com/filescodebox/p2p
 go 1.26.5
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.24.1
 	github.com/spf13/viper v1.21.0
 	golang.org/x/time v0.16.0

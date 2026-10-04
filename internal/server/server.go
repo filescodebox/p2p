@@ -11,10 +11,12 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/filescodebox/p2p/internal/config"
 	"github.com/filescodebox/p2p/internal/limiter"
 	"github.com/filescodebox/p2p/internal/registry"
+	"github.com/filescodebox/p2p/internal/signaling"
 )
 
 const maxBodyBytes = 64 << 10 // 64KB,所有请求体上限
@@ -35,13 +37,14 @@ type Server struct {
 	log     *slog.Logger
 	metrics *Metrics
 	version string
+	hub     *signaling.Hub // M3 信令（signaling.enabled=false 时为 nil）
 
 	resolveLim *limiter.Limiter // 读路径(resolve/node 查询)
-	writeLim   *limiter.Limiter // 写路径(register/announce)
+	writeLim   *limiter.Limiter // 写路径(register/announce/信道接入)
 	adminLim   *limiter.Limiter // 管理端
 }
 
-// New 构造 Server。ctx 用于限流器回收协程的生命周期。
+// New 构造 Server。ctx 用于限流器/信令清扫协程的生命周期。
 func New(ctx context.Context, p Params) *Server {
 	log := p.Logger
 	if log == nil {
@@ -51,12 +54,26 @@ func New(ctx context.Context, p Params) *Server {
 	if m == nil {
 		m = NewMetrics()
 	}
+	var hub *signaling.Hub
+	if p.Config.Signaling.Enabled {
+		hub = signaling.NewHub(ctx, signaling.Config{
+			SessionTTL:         p.Config.Signaling.SessionTTL,
+			IdleTimeout:        p.Config.Signaling.IdleTimeout,
+			HelloTimeout:       p.Config.Signaling.HelloTimeout,
+			PingPeriod:         20 * time.Second,
+			WriteWait:          10 * time.Second,
+			MaxFrameBytes:      p.Config.Signaling.MaxFrameBytes,
+			MaxSessionsPerNode: p.Config.Signaling.MaxSessionsPerNode,
+			MaxTotalSessions:   p.Config.Signaling.MaxTotalSessions,
+		}, p.Service, m)
+	}
 	return &Server{
 		svc:        p.Service,
 		cfg:        p.Config,
 		log:        log,
 		metrics:    m,
 		version:    p.Version,
+		hub:        hub,
 		resolveLim: limiter.New(ctx, 1, 120), // resolve: 平均 1/s 突发 120
 		writeLim:   limiter.New(ctx, 2, 120), // 写路径: 平均 2/s 突发 120
 		adminLim:   limiter.New(ctx, 10, 60), // 管理端宽松
@@ -83,6 +100,11 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "GET /v1/admin/nodes", "admin_nodes", s.adminLim, s.adminGate(s.handleAdminNodes))
 	s.route(mux, "GET /v1/admin/announces", "admin_announces", s.adminLim, s.adminGate(s.handleAdminAnnounces))
 	s.route(mux, "DELETE /v1/admin/nodes/{id}", "admin_node_delete", s.adminLim, s.adminGate(s.handleAdminDeleteNode))
+
+	// M3 信令信道（signaling.enabled=false 时不注册）
+	if s.hub != nil {
+		s.route(mux, "GET /v1/channel/{hash}", "channel", s.writeLim, s.hub.Handler())
+	}
 
 	return recoverMW(s.log, requestLogMW(s.log, mux))
 }

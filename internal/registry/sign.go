@@ -81,6 +81,19 @@ func isHex64(s string) bool {
 	return err == nil
 }
 
+// ---- 导出包装：信令等子包复用同一套身份/签名/时间戳约定，避免各处自抄 ----
+
+// ParseNodeID 导出节点身份解析：node_id hex → Ed25519 公钥。
+func ParseNodeID(id string) (ed25519.PublicKey, error) { return parseNodeID(id) }
+
+// VerifySignature 导出签名校验（base64 std，Ed25519）。
+func VerifySignature(pub ed25519.PublicKey, payload []byte, sigB64 string) error {
+	return verifySig(pub, payload, sigB64)
+}
+
+// CheckTimestamp 导出时间戳防重放窗口校验（±MaxClockSkew）。
+func CheckTimestamp(ts int64, now time.Time) error { return checkTS(ts, now) }
+
 // nodeKey 从 node_id 还原公钥。只用于已通过注册校验的节点记录,
 // 解析失败时返回 nil,verifySig 会自然拒绝。
 func nodeKey(id string) ed25519.PublicKey {

@@ -18,7 +18,27 @@ type Config struct {
 	Registration Registration
 	Announce     Announce
 	Admin        Admin
+	Signaling    Signaling
 	Log          Log
+}
+
+// Signaling WS 信令信道配置（M3 设备直传；默认开——准入由节点签名把守，
+// 关闭只影响直传配对，不影响注册/公告/解析）。
+type Signaling struct {
+	// Enabled 总开关。env: FCB_P2P_SIGNALING_ENABLED
+	Enabled bool
+	// SessionTTL 会话最长生命周期（含等待配对）。env: FCB_P2P_SIGNALING_SESSION_TTL
+	SessionTTL time.Duration
+	// IdleTimeout 连接空闲上限（pong 与数据帧均续期）。env: FCB_P2P_SIGNALING_IDLE_TIMEOUT
+	IdleTimeout time.Duration
+	// HelloTimeout 接入后交 hello 的时限。env: FCB_P2P_SIGNALING_HELLO_TIMEOUT
+	HelloTimeout time.Duration
+	// MaxFrameBytes data 帧负载上限（字节）。env: FCB_P2P_SIGNALING_MAX_FRAME_BYTES
+	MaxFrameBytes int
+	// MaxSessionsPerNode 单节点并发会话上限。env: FCB_P2P_SIGNALING_MAX_PER_NODE
+	MaxSessionsPerNode int
+	// MaxTotalSessions 全局并发会话上限。env: FCB_P2P_SIGNALING_MAX_TOTAL
+	MaxTotalSessions int
 }
 
 // Server HTTP 服务参数。
@@ -73,6 +93,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("announce.max_ttl", 168*time.Hour)
 	v.SetDefault("admin.password", "")
 	v.SetDefault("log.level", "info")
+	// 信令信道（M3；准入由节点签名把守，默认开）
+	v.SetDefault("signaling.enabled", true)
+	v.SetDefault("signaling.session_ttl", 10*time.Minute)
+	v.SetDefault("signaling.idle_timeout", 2*time.Minute)
+	v.SetDefault("signaling.hello_timeout", 10*time.Second)
+	v.SetDefault("signaling.ping_period", 20*time.Second)
+	v.SetDefault("signaling.write_wait", 10*time.Second)
+	v.SetDefault("signaling.max_frame_bytes", 16384)
+	v.SetDefault("signaling.max_sessions_per_node", 8)
+	v.SetDefault("signaling.max_total_sessions", 1024)
 }
 
 // Load 读取配置。path 为空时仅用默认值+环境变量。
@@ -112,6 +142,15 @@ func Load(path string) (*Config, error) {
 		Admin: Admin{
 			Password: v.GetString("admin.password"),
 		},
+		Signaling: Signaling{
+			Enabled:            v.GetBool("signaling.enabled"),
+			SessionTTL:         v.GetDuration("signaling.session_ttl"),
+			IdleTimeout:        v.GetDuration("signaling.idle_timeout"),
+			HelloTimeout:       v.GetDuration("signaling.hello_timeout"),
+			MaxFrameBytes:      v.GetInt("signaling.max_frame_bytes"),
+			MaxSessionsPerNode: v.GetInt("signaling.max_sessions_per_node"),
+			MaxTotalSessions:   v.GetInt("signaling.max_total_sessions"),
+		},
 		Log: Log{
 			Level: v.GetString("log.level"),
 		},
@@ -141,6 +180,19 @@ func (c *Config) validate() error {
 	}
 	if c.Announce.MaxPerNode < 1 || c.Announce.MaxTTL <= 0 {
 		return fmt.Errorf("announce 配额非法: max_per_node=%d max_ttl=%s", c.Announce.MaxPerNode, c.Announce.MaxTTL)
+	}
+	if c.Signaling.Enabled {
+		if c.Signaling.SessionTTL <= 0 || c.Signaling.IdleTimeout <= 0 || c.Signaling.HelloTimeout <= 0 {
+			return fmt.Errorf("signaling 时长参数非法: ttl=%s idle=%s hello=%s",
+				c.Signaling.SessionTTL, c.Signaling.IdleTimeout, c.Signaling.HelloTimeout)
+		}
+		if c.Signaling.MaxFrameBytes < 1024 || c.Signaling.MaxFrameBytes > 1<<20 {
+			return fmt.Errorf("signaling.max_frame_bytes 须在 [1KB,1MB],当前: %d", c.Signaling.MaxFrameBytes)
+		}
+		if c.Signaling.MaxSessionsPerNode < 1 || c.Signaling.MaxTotalSessions < 1 {
+			return fmt.Errorf("signaling 会话上限非法: per_node=%d total=%d",
+				c.Signaling.MaxSessionsPerNode, c.Signaling.MaxTotalSessions)
+		}
 	}
 	return nil
 }

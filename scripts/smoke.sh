@@ -29,22 +29,22 @@ done
 echo "── [1/6] GET /health"
 curl -sf "${BASE}/health" | grep -q '"status":"ok"' && echo "  ✓ health ok"
 
-echo "── [2/6] 节点生命周期 flow(注册/公告/解析/撤销/注销)"
-go run ./scripts/smokegen -base "${BASE}"
+echo "── [2/7] 节点生命周期 flow(注册/公告/解析/撤销/注销)"
+go run ./scripts/smokegen -base "${BASE}" 2>&1 | sed 's/^/  /'
 
-echo "── [3/6] resolve 未知口令 → 404"
+echo "── [3/7] resolve 未知口令 → 404"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/v1/resolve/0000000000000000000000000000000000000000000000000000000000000000")
 [ "$CODE" = "404" ] && echo "  ✓ resolve miss → 404"
 
-echo "── [4/6] 管理 API(stats 应剩 0 节点/0 公告)"
+echo "── [4/7] 管理 API(stats 应剩 0 节点/0 公告)"
 curl -sf "${BASE}/v1/admin/stats" -H "Authorization: Bearer ${ADMIN_PW}" | grep -q '"nodes":0' \
   && echo "  ✓ admin stats nodes=0"
 
-echo "── [5/6] 管理 API 未授权 → 401"
+echo "── [5/7] 管理 API 未授权 → 401"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/v1/admin/stats")
 [ "$CODE" = "401" ] && echo "  ✓ admin 无凭据 → 401"
 
-echo "── [6/6] GET /metrics"
+echo "── [6/7] GET /metrics"
 curl -sf "${BASE}/metrics" | grep -q 'p2p_nodes_active' && echo "  ✓ metrics 暴露"
 
 echo
