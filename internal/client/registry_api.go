@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/filescodebox/kit/version"
 	"github.com/filescodebox/p2p/internal/registry"
 )
 
@@ -53,13 +54,15 @@ func (n *nodeIdentity) sign(payload []byte) string {
 
 // register 注册节点租约（url 为占位——直传不经 url 字段，取件方走打洞/中继）。
 func (r *registryAPI) register(ctx context.Context, n *nodeIdentity, name string, ttl time.Duration) error {
+	// version 参与签名 payload——body 与 BuildPayload 必须同源(不同源即 401)
+	ver := "p2pc/" + version.Version // kit/version,-ldflags 注入(镜像构建);裸 go build 为 dev
 	body := map[string]any{
-		"node_id": n.id, "url": "http://direct.invalid", "name": name, "version": "p2pc",
+		"node_id": n.id, "url": "http://direct.invalid", "name": name, "version": ver,
 		"caps": []string{"direct"}, "ttl_seconds": int64(ttl / time.Second),
 		"nonce": "p2pc-" + strconv.FormatInt(time.Now().UnixNano(), 36), "ts": time.Now().Unix(),
 	}
 	body["ts"] = time.Now().Unix()
-	payload := registry.BuildPayload(n.id, "http://direct.invalid", name, "p2pc",
+	payload := registry.BuildPayload(n.id, "http://direct.invalid", name, ver,
 		"direct", fmt.Sprint(int64(ttl/time.Second)), body["nonce"].(string), fmt.Sprint(body["ts"].(int64)))
 	body["sig"] = n.sign(payload)
 	return r.do(ctx, http.MethodPost, "/v1/nodes/register", body, http.StatusOK, nil)

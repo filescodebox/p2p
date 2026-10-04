@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/filescodebox/kit/version"
 	"github.com/filescodebox/p2p/internal/client"
 )
 
@@ -40,6 +41,8 @@ func main() {
 		receive(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
+	case "-v", "--version", "version":
+		fmt.Printf("p2pc %s (commit %s, built %s)\n", version.Version, version.BuildCommit, version.BuildTime)
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n\n", cmd)
 		usage()

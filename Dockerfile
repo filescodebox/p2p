@@ -31,7 +31,12 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' \
     -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'" \
     -o /out/p2pd ./cmd/p2pd && \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-w -s" -o /out/p2pc ./cmd/p2pc
+    CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-w -s \
+    -X 'github.com/filescodebox/kit/version.Version=${VERSION}' \
+    -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' \
+    -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'" \
+    -o /out/p2pc ./cmd/p2pc
 
 # ========== Stage 2: 运行时镜像 ==========
 FROM alpine:3.19
