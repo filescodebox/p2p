@@ -36,6 +36,17 @@ signaling:
   max_sessions_per_node: 8
   max_total_sessions: 1024
 
+# UDP 地址反射器(M3 打洞前提;与 HTTP 同端口,按魔法串门控,默认开)。
+reflector:
+  enabled: true
+
+# 加密中继(M3 打洞失败兜底;默认整机关闭——不存在可被滥用的开放代理)。
+# 客户端凭 PAKE 派生令牌配对,中继只转发密文帧+单信道限速。
+relay:
+  enabled: false
+  port: 12347
+  mbps_per_channel: 10  # 单信道带宽上限(0=不限)
+
 admin:
   # 管理端口令。留空 = 管理 API 整体禁用。生产必须经环境变量注入。
   password: ""

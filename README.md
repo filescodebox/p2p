@@ -16,7 +16,7 @@ FilesCodeBox 生态的 **P2P 联邦注册中心**：让任意多个 FilesCodeBox
 | 节点注册与心跳 | Ed25519 签名租约（node_id 即公钥），TTL 到期自动清扫 | ✅ v0.1 |
 | 口令联邦路由 | `SHA-256(口令) → 源节点`，取件方直连源节点、源节点本地校验口令，零跨节点信任 | ✅ v0.1 |
 | 信令信道 | WS 同口令双方配对 + 不透明握手帧转发（节点签名准入，服务端零知识） | ✅ v0.2 |
-| 设备直传 | 打洞 + 端到端加密中继 + 传输协议（客户端侧，消费上述信令） | 🚧 M3 |
+| **设备直传** | PAKE → 加密候选交换 → UDP 同时开洞 → 失败走加密中继；AEAD 传输+断点续传+sha256 校验 | ✅ v0.3（`p2pc` 参考客户端） |
 
 非目标：内容 DHT 去中心化、离线传输、文件中转存储。
 
@@ -31,9 +31,21 @@ docker run -d --name fcb-p2p -p 12346:12346 \
 源码构建：
 
 ```bash
-make build && ./bin/p2pd            # 默认端口 12346
-make smoke                          # 冒烟:注册/公告/解析/撤销/注销全流程
+make build && ./bin/p2pd            # 服务端:12346(HTTP/WS/反射器)+12347(中继,默认关)
+make smoke                          # 冒烟:注册/公告/解析/信令/直传回环全流程
 ```
+
+## 设备直传（p2pc，M3）
+
+```bash
+# 发送方(自动生成口令 XXXX-XXXX-XXXX 并等待对方取走)
+p2pc send 报告.pdf --registry http://p2p.example.com:12346
+
+# 接收方(输入同一口令,文件直连下载到当前目录)
+p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
+```
+
+流程：节点注册+口令公告 → WS 信令配对（接收方与 resolve 源身份交叉核对）→ PAKE（口令派生会话密钥）→ 候选地址交换（PAKE 派生密钥加密）→ **UDP 同时开洞**（反射器提供公网映射；成功走 QUIC 指纹钉定 mTLS 直连）→ 失败回落**加密中继**（12347，令牌配对+限速）→ AEAD 消息传输（meta/ready/chunk/final，断点续传）→ sha256 全量校验。服务端全程只见密文。
 
 ## 配置
 
@@ -52,6 +64,10 @@ make smoke                          # 冒烟:注册/公告/解析/撤销/注销�
 | `FCB_P2P_SIGNALING_SESSION_TTL` | `10m` | 信令会话最长生命周期 |
 | `FCB_P2P_SIGNALING_IDLE_TIMEOUT` | `2m` | 连接空闲上限 |
 | `FCB_P2P_SIGNALING_MAX_PER_NODE` | `8` | 单节点并发信令会话上限 |
+| `FCB_P2P_REFLECTOR_ENABLED` | `true` | UDP 地址反射器（打洞前提） |
+| `FCB_P2P_RELAY_ENABLED` | `false` | 加密中继开关（打洞失败兜底） |
+| `FCB_P2P_RELAY_PORT` | `12347` | 中继 TCP 端口 |
+| `FCB_P2P_RELAY_MBPS` | `10` | 单信道带宽上限（Mbps，0=不限） |
 | `FCB_P2P_LOG_LEVEL` | `info` | debug / info / warn / error |
 
 ## API（v1）
@@ -105,12 +121,13 @@ make smoke                          # 冒烟:注册/公告/解析/撤销/注销�
 
 关闭码：`4001` hello 缺失或非法 · `4002` 信道占用或超配额 · `4003` 未授权（签名/身份/租约）。
 
-**客户端义务（安全契约）：**
+**客户端义务（安全契约，p2pc 已全部实现）：**
 
-1. 配对后先跑 **PAKE**（[schollz/pake](https://github.com/schollz/pake) 同类实现），data 帧里传不透明 PAKE 消息——服务端可见但无法推导密钥；
+1. 配对后先跑 **PAKE**（p2pc 用 [schollz/pake](https://github.com/schollz/pake) SIEC 曲线 2 消息流），data 帧里传不透明 PAKE 消息——服务端可见但无法推导密钥；
 2. PAKE 完成后再传**候选地址**等敏感信息，且必须用 PAKE 派生密钥加密——明文候选=可被注入劫持；
-3. 打洞与传输见路线图（UDP 同时开洞为主、加密中继兜底）；
-4. 响应服务端 ping（主流 WS 库默认自动回 pong；pong 与数据帧均续空闲期）。
+3. 打洞：反射器取公网映射 + LAN 候选，UDP 同时开洞（探针须可解密=身份确认）；成功走 QUIC（会话级证书指纹钉定 mTLS）直连；
+4. 失败走中继：令牌=PAKE 派生凭据，传输首帧 AEAD 认证（令牌被窃仅构成 DoS）；
+5. 响应服务端 ping（主流 WS 库默认自动回 pong；pong 与数据帧均续空闲期）。
 
 **服务端治理**（均可配置）：data 帧负载 ≤16KB · 会话 TTL 10 分钟 · 连接空闲 2 分钟 · 单节点并发会话 8 · 全局 1024；已满信道拒绝第三人（4002）。
 

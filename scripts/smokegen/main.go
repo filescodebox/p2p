@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -15,11 +16,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 
+	"github.com/filescodebox/p2p/internal/client"
 	"github.com/filescodebox/p2p/internal/registry"
 	"github.com/filescodebox/p2p/internal/signaling"
 )
@@ -37,6 +40,88 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("✓ 生命周期 + 信令信道 flow OK")
+	if err := runTransfer(*base); err != nil {
+		fmt.Fprintln(os.Stderr, "✗ smoke transfer:", err)
+		os.Exit(1)
+	}
+}
+
+// runTransfer 设备直传回环: 同进程起发送/接收两个客户端,1MB 随机文件走
+// 打洞(回环)或中继路径完整传输并校验。
+func runTransfer(base string) error {
+	dir, err := os.MkdirTemp("", "p2p-transfer-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	src := filepath.Join(dir, "transfer-smoke.bin")
+	data := make([]byte, 1<<20)
+	if _, err := rand.Read(data); err != nil {
+		return err
+	}
+	if err := os.WriteFile(src, data, 0o644); err != nil {
+		return err
+	}
+
+	code, err := client.GenerateCode()
+	if err != nil {
+		return err
+	}
+	recvDir := filepath.Join(dir, "out")
+	if err := os.MkdirAll(recvDir, 0o755); err != nil {
+		return err
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		c, err := client.New(client.Options{Registry: base, NodeKeyPath: filepath.Join(dir, "s.key"), RelayAddr: relayAddrOf(base), Quiet: true})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		_, err = c.Send(src, code)
+		errCh <- err
+	}()
+	// 等公告就绪
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(base + "/v1/resolve/" + registry.CodeHash(code))
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	c, err := client.New(client.Options{Registry: base, NodeKeyPath: filepath.Join(dir, "r.key"), RelayAddr: relayAddrOf(base), Quiet: true})
+	if err != nil {
+		return err
+	}
+	out, err := c.Receive(code, recvDir)
+	if err != nil {
+		return fmt.Errorf("接收: %w", err)
+	}
+	if err := <-errCh; err != nil {
+		return fmt.Errorf("发送: %w", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		return err
+	}
+	if sha256.Sum256(got) != sha256.Sum256(data) {
+		return fmt.Errorf("传输内容不一致")
+	}
+	fmt.Println("  ✓ 设备直传回环(1MB)")
+	return nil
+}
+
+func relayAddrOf(base string) string {
+	host := strings.TrimPrefix(strings.TrimSuffix(base, "/"), "http://")
+	host = strings.TrimPrefix(host, "https://")
+	if i := strings.Index(host, "/"); i >= 0 {
+		host = host[:i]
+	}
+	return host + ":12347"
 }
 
 // ---- 通用:节点注册/注销 ----

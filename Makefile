@@ -4,7 +4,7 @@ VERSION ?= dev
 .PHONY: build test vet lint run smoke docker clean help
 
 build:  ## 构建二进制 → bin/p2pd
-	go build -trimpath -ldflags "-w -s -X 'main.Version=$(VERSION)'" -o bin/$(BINARY) ./cmd/p2pd
+	go build -trimpath -ldflags "-w -s -X 'github.com/filescodebox/kit/version.Version=$(VERSION)'" -o bin/$(BINARY) ./cmd/p2pd
 
 test:   ## 全量测试(-race)
 	go test -race ./...

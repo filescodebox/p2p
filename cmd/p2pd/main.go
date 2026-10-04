@@ -10,23 +10,22 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	reflectPkg "github.com/filescodebox/p2p/internal/reflect"
+	relayPkg "github.com/filescodebox/p2p/internal/relay"
+
+	"github.com/filescodebox/kit/shutdown"
+	"github.com/filescodebox/kit/version"
 	"github.com/filescodebox/p2p/internal/config"
 	"github.com/filescodebox/p2p/internal/registry"
 	"github.com/filescodebox/p2p/internal/server"
 	"github.com/filescodebox/p2p/internal/store/memory"
-)
-
-// 构建信息,由 -ldflags -X 注入。
-var (
-	Version   = "dev"
-	Commit    = "unknown"
-	BuildTime = "unknown"
 )
 
 const sweepInterval = 30 * time.Second
@@ -37,7 +36,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("p2pd %s (commit %s, built %s)\n", Version, Commit, BuildTime)
+		fmt.Printf("p2pd %s (commit %s, built %s)\n", version.Version, version.BuildCommit, version.BuildTime)
 		return
 	}
 	path := resolveConfigPath(*configPath)
@@ -67,7 +66,7 @@ func main() {
 		Service: svc,
 		Config:  *cfg,
 		Logger:  logger,
-		Version: Version,
+		Version: version.Version,
 	})
 
 	// 清扫循环:物理回收过期租约/公告并刷新活跃量指标。
@@ -87,6 +86,31 @@ func main() {
 		}
 	}()
 
+	// UDP 地址反射器（打洞前提;与 HTTP 同端口,协议不同互不冲突）。
+	if cfg.Reflector.Enabled {
+		udpConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: cfg.Server.Port})
+		if err != nil {
+			logger.Warn("UDP 反射器启动失败(客户端打洞将退化为仅 LAN/中继)", "err", err)
+		} else {
+			go reflectPkg.Serve(ctx, udpConn, logger)
+		}
+	}
+
+	// 加密中继（M3 打洞兜底;默认关）。
+	if cfg.Relay.Enabled {
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Relay.Port))
+		if err != nil {
+			logger.Error("中继监听失败", "port", cfg.Relay.Port, "err", err)
+			os.Exit(1)
+		}
+		bps := cfg.Relay.MbpsPerChannel * 1_000_000 / 8
+		go func() {
+			if err := relayPkg.Serve(ctx, ln, bps, logger); err != nil {
+				logger.Error("中继异常退出", "err", err)
+			}
+		}()
+	}
+
 	httpSrv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      srv.Handler(),
@@ -103,26 +127,31 @@ func main() {
 	}()
 
 	logger.Info("p2pd 已启动",
-		"version", Version, "commit", Commit,
+		"version", version.Version, "commit", version.BuildCommit,
 		"port", cfg.Server.Port,
 		"registration_mode", cfg.Registration.Mode,
 		"admin_enabled", cfg.Admin.Password != "",
 		"relay", "M3 未实现",
 	)
 
+	// 优雅停机编排(kit/shutdown):teardown(取消根 ctx→清扫/反射器/中继退出)
+	// 先于 http 排水执行;每个资源独立超时预算,panic 隔离不中断剩余清理。
+	mgr := shutdown.New(10 * time.Second)
+	mgr.AddTeardown(stop)
+	mgr.Add("http", func(ctx context.Context) error { return httpSrv.Shutdown(ctx) }, 10*time.Second)
+	shutdownDone := make(chan struct{})
+	go func() {
+		mgr.Listen(os.Interrupt, syscall.SIGTERM)
+		close(shutdownDone)
+	}()
+
 	select {
-	case <-ctx.Done():
+	case <-shutdownDone:
 	case err := <-errCh:
 		if err != nil {
 			logger.Error("服务器异常退出", "err", err)
 			os.Exit(1)
 		}
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("关闭未完全收尾", "err", err)
 	}
 	logger.Info("p2pd 已退出")
 }

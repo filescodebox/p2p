@@ -27,9 +27,9 @@ ARG BUILD_TIME=unknown
 # 纯静态(CGO_ENABLED=0):无 sqlite 等本地依赖
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags="-w -s \
-    -X 'main.Version=${VERSION}' \
-    -X 'main.Commit=${COMMIT}' \
-    -X 'main.BuildTime=${BUILD_TIME}'" \
+    -X 'github.com/filescodebox/kit/version.Version=${VERSION}' \
+    -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' \
+    -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'" \
     -o /out/p2pd ./cmd/p2pd
 
 # ========== Stage 2: 运行时镜像 ==========
@@ -44,6 +44,7 @@ RUN addgroup -g 1000 app && \
 WORKDIR /app
 
 COPY --from=builder /out/p2pd ./
+COPY --from=builder /out/p2pc ./
 # 随镜像携带默认配置:裸 docker run 开箱可用;生产经 env/compose 覆盖。
 COPY configs/config.yaml ./configs/config.yaml
 
@@ -51,7 +52,7 @@ RUN mkdir -p data && chown -R app:app /app
 
 USER app
 
-EXPOSE 12346
+EXPOSE 12346 12347/udp 12347
 
 # wget --spider 发 HEAD,/health 未注册 HEAD 恒 404 → 健康检查永不通过,须显式 GET
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

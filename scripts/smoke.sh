@@ -18,8 +18,8 @@ trap cleanup EXIT
 echo "── 构建 p2pd"
 make build -s
 
-echo "── 启动 p2pd (端口 ${PORT}, admin 开)"
-FCB_P2P_SERVER_PORT=${PORT} FCB_P2P_ADMIN_PASSWORD=${ADMIN_PW} ./bin/p2pd > /tmp/p2pd-smoke.log 2>&1 &
+echo "── 启动 p2pd (端口 ${PORT}, admin+中继开)"
+FCB_P2P_SERVER_PORT=${PORT} FCB_P2P_ADMIN_PASSWORD=${ADMIN_PW} FCB_P2P_RELAY_ENABLED=true ./bin/p2pd > /tmp/p2pd-smoke.log 2>&1 &
 PID=$!
 for i in $(seq 1 20); do
   curl -sf "${BASE}/health" >/dev/null 2>&1 && break
