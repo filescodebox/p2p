@@ -93,7 +93,7 @@ make smoke                          # 冒烟:注册/公告/解析/撤销/注销�
 | [fnos](https://github.com/filescodebox/fnos) · [desktop](https://github.com/filescodebox/desktop) | 飞牛 fnOS 适配 · 桌面客户端（M3 直传对等端） |
 | [charts](https://github.com/filescodebox/charts) | Kubernetes Helm Chart |
 
-依赖方向：`server / fnos / frontend / p2p → core → contracts`；p2p 为叶子仓，零生态依赖（CI 守卫强制）。
+依赖方向：`server / fnos / frontend → core → contracts`；p2p 为叶子仓，零生态依赖（stdlib net/http，无 Hertz，CI 守卫强制），不在依赖链上。
 
 ## License
 
