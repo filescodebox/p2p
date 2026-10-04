@@ -188,7 +188,7 @@ func TestSendRecvForcedRelay(t *testing.T) {
 }
 
 func TestSendRecvResumeFromPartial(t *testing.T) {
-	f := newFixture(t, true) // 中继可用,防打洞环境差异导致 flaky
+	f := newFixture(t, true)
 	code, _ := GenerateCode()
 	sendDir := t.TempDir()
 	recvDir := t.TempDir()
@@ -203,9 +203,12 @@ func TestSendRecvResumeFromPartial(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 断点续传与传输方式无关,钉中继路径(CI 网络打洞结果不确定)
+	sendOpts := testOpts(f, "send")
+	sendOpts.DisablePunch = true
 	errCh := make(chan error, 1)
 	go func() {
-		c, err := New(testOpts(f, "send"))
+		c, err := New(sendOpts)
 		if err != nil {
 			errCh <- err
 			return
@@ -215,7 +218,9 @@ func TestSendRecvResumeFromPartial(t *testing.T) {
 	}()
 
 	waitForAnnounce(t, f.base, code)
-	c, err := New(testOpts(f, "recv"))
+	recvOpts := testOpts(f, "recv")
+	recvOpts.DisablePunch = true
+	c, err := New(recvOpts)
 	if err != nil {
 		t.Fatal(err)
 	}

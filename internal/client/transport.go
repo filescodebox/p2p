@@ -112,7 +112,9 @@ func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peer
 	// 流方向: 发送方(QUIC 服务端)打开流并率先写 meta——QUIC 流在首字节
 	// 上线前对端 AcceptStream 不会返回,故接收方以"收到 meta 帧"为准,
 	// 不存在空等;错口令在首个 AEAD 帧解密处暴露。
-	opCtx, opCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// 接受/拨号预算与打洞预算同量级:打洞结果不对称时(一侧直连一侧
+	// 只能中继),快速失败让双方对齐到中继,避免 15s 级死等
+	opCtx, opCancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer opCancel()
 	var stream *quic.Stream
 	if isSender {
