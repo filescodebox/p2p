@@ -24,7 +24,9 @@ jobs:
         with:
           version: v2.14
           args: --timeout 9m
-      - name: Dep guard(p2p 为生态叶子仓,禁依赖任何兄弟模块)
+      # kit(filescodebox/kit) 是有意放行的地基层(本身零生态依赖,p2p→kit 单向无环);
+      # 禁的是业务链兄弟模块,勿把 kit 加进黑名单
+      - name: Dep guard(p2p 禁依赖业务链兄弟模块;kit 地基层放行)
         run: |
           BAD=$(go list -deps ./... | grep -E '^github\.com/filescodebox/(contracts|core|server|frontend|fnos|desktop|charts)' || true)
           if [ -n "$BAD" ]; then echo "✗ p2p 违规依赖:"; echo "$BAD"; exit 1; fi

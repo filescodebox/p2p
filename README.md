@@ -133,7 +133,7 @@ make smoke                          # 冒烟:注册/公告/解析/撤销/注销�
 | [fnos](https://github.com/filescodebox/fnos) · [desktop](https://github.com/filescodebox/desktop) | 飞牛 fnOS 适配 · 桌面客户端（M3 直传对等端） |
 | [charts](https://github.com/filescodebox/charts) | Kubernetes Helm Chart |
 
-依赖方向：`server / fnos / frontend → core → contracts`；p2p 为叶子仓，零生态依赖（stdlib net/http，无 Hertz，CI 守卫强制），不在依赖链上。
+依赖方向：`server / fnos / frontend → core → contracts`；p2p 为叶子仓，业务链零生态依赖（stdlib net/http，无 Hertz，CI 守卫强制），不在依赖链上。唯一允许的地基层依赖是 [kit](https://github.com/filescodebox/kit)（共享工具库，本身零生态依赖，依赖方向恒为 p2p → kit 单向无环；2026-10-05 起按键限流器采用 kit/ratelimit）。
 
 ## License
 
