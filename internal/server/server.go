@@ -13,13 +13,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/filescodebox/kit/ratelimit"
 	"github.com/filescodebox/p2p/internal/config"
-	"github.com/filescodebox/p2p/internal/limiter"
 	"github.com/filescodebox/p2p/internal/registry"
 	"github.com/filescodebox/p2p/internal/signaling"
+	"golang.org/x/time/rate"
 )
 
 const maxBodyBytes = 64 << 10 // 64KB,所有请求体上限
+
+// limiterIdleTTL 按键限流条目的空闲回收阈值(闲置超此值的 key 被清理)。
+const limiterIdleTTL = 30 * time.Minute
+
+// newKeyedLimiter 构造按键令牌桶(kit/ratelimit,空闲键自动回收)。
+// 生命周期跟随 ctx:ctx 结束时停掉清理协程——与信令/清扫协程同寿命。
+func newKeyedLimiter(ctx context.Context, r rate.Limit, burst int) *ratelimit.KeyedLimiter {
+	kl := ratelimit.NewKeyedLimiter(func() ratelimit.Limiter {
+		return ratelimit.NewTokenBucket(r, burst)
+	}, limiterIdleTTL)
+	go func() {
+		<-ctx.Done()
+		kl.Close()
+	}()
+	return kl
+}
 
 // Params 装配参数。
 type Params struct {
@@ -39,9 +56,9 @@ type Server struct {
 	version string
 	hub     *signaling.Hub // M3 信令（signaling.enabled=false 时为 nil）
 
-	resolveLim *limiter.Limiter // 读路径(resolve/node 查询)
-	writeLim   *limiter.Limiter // 写路径(register/announce/信道接入)
-	adminLim   *limiter.Limiter // 管理端
+	resolveLim *ratelimit.KeyedLimiter // 读路径(resolve/node 查询)
+	writeLim   *ratelimit.KeyedLimiter // 写路径(register/announce/信道接入)
+	adminLim   *ratelimit.KeyedLimiter // 管理端
 }
 
 // New 构造 Server。ctx 用于限流器/信令清扫协程的生命周期。
@@ -74,9 +91,9 @@ func New(ctx context.Context, p Params) *Server {
 		metrics:    m,
 		version:    p.Version,
 		hub:        hub,
-		resolveLim: limiter.New(ctx, 1, 120), // resolve: 平均 1/s 突发 120
-		writeLim:   limiter.New(ctx, 2, 120), // 写路径: 平均 2/s 突发 120
-		adminLim:   limiter.New(ctx, 10, 60), // 管理端宽松
+		resolveLim: newKeyedLimiter(ctx, 1, 120), // resolve: 平均 1/s 突发 120
+		writeLim:   newKeyedLimiter(ctx, 2, 120), // 写路径: 平均 2/s 突发 120
+		adminLim:   newKeyedLimiter(ctx, 10, 60), // 管理端宽松
 	}
 }
 
@@ -110,7 +127,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // route 注册路由:指标(外层,含 429)→ 限流(内层)→ 业务 handler。
-func (s *Server) route(mux *http.ServeMux, pattern, name string, l *limiter.Limiter, h http.HandlerFunc) {
+func (s *Server) route(mux *http.ServeMux, pattern, name string, l *ratelimit.KeyedLimiter, h http.HandlerFunc) {
 	mux.HandleFunc(pattern, s.withMetrics(name, s.withLimit(l, h)))
 }
 

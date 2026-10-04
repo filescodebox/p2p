@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/filescodebox/p2p/internal/limiter"
+	"github.com/filescodebox/kit/ratelimit"
 )
 
 var (
@@ -77,7 +77,7 @@ func (s *statusRecorder) statusLabel() string {
 }
 
 // withLimit 令牌桶限流包装;超限回 429。
-func (s *Server) withLimit(l *limiter.Limiter, h http.HandlerFunc) http.HandlerFunc {
+func (s *Server) withLimit(l *ratelimit.KeyedLimiter, h http.HandlerFunc) http.HandlerFunc {
 	if l == nil {
 		return h
 	}
