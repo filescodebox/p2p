@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/url"
@@ -90,7 +91,9 @@ const (
 
 // RegisterNode 注册或续租节点(register 与 heartbeat 同语义,幂等 upsert)。
 func (s *Service) RegisterNode(ctx context.Context, in RegisterInput, ip string) (store.Node, error) {
-	if s.p.RequireToken != "" && in.Token != s.p.RequireToken {
+	// 恒时比较（2026-10-05 审计：普通 == 比较留时序侧信道；写路径限流已有，
+	// 此处补齐防爆破语义）
+	if s.p.RequireToken != "" && subtle.ConstantTimeCompare([]byte(in.Token), []byte(s.p.RequireToken)) != 1 {
 		return store.Node{}, fmt.Errorf("%w: registration token 不匹配", ErrUnauthorized)
 	}
 	pub, err := parseNodeID(in.NodeID)

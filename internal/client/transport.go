@@ -144,7 +144,7 @@ func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peer
 			return nil, nil, fmt.Errorf("quic 接受流: %w", err)
 		}
 	}
-	w, err := wire.New(stream, wire.DeriveKey(session, "data"))
+	w, err := wire.New(stream, wire.DeriveKey(session, "data"), isSender)
 	if err != nil {
 		_ = tr.Close()
 		return nil, nil, err
@@ -153,8 +153,9 @@ func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peer
 }
 
 // establishRelay 经中继建立传输：TCP 接入 + 令牌配对 + AEAD 消息帧。
-// 首帧即完成认证(无口令者产不出合法帧)。
-func establishRelay(session []byte, relayAddr, token string) (*wire.Conn, func(), error) {
+// 首帧即完成认证(无口令者产不出合法帧)。isSender 用于 AEAD 方向标签
+// （nonce 空间分离，防跨方向 nonce 重用）。
+func establishRelay(session []byte, relayAddr, token string, isSender bool) (*wire.Conn, func(), error) {
 	tcp, err := net.DialTimeout("tcp", relayAddr, 10*time.Second)
 	if err != nil {
 		return nil, nil, fmt.Errorf("中继接入: %w", err)
@@ -163,7 +164,7 @@ func establishRelay(session []byte, relayAddr, token string) (*wire.Conn, func()
 		_ = tcp.Close()
 		return nil, nil, fmt.Errorf("中继令牌发送: %w", err)
 	}
-	w, err := wire.New(tcp, wire.DeriveKey(session, "data"))
+	w, err := wire.New(tcp, wire.DeriveKey(session, "data"), isSender)
 	if err != nil {
 		_ = tcp.Close()
 		return nil, nil, err

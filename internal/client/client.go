@@ -274,7 +274,7 @@ func (c *Client) establish(sock *net.UDPConn, session []byte, cert tls.Certifica
 		c.log.Info("对端无 UDP 候选,走中继")
 	}
 	_ = sock.Close() // 打洞路径未采用,套接字交还系统
-	w, cleanup, rerr := establishRelay(session, c.relayAddr(), relayToken(session))
+	w, cleanup, rerr := establishRelay(session, c.relayAddr(), relayToken(session), isSender)
 	if rerr != nil {
 		return nil, nil, "", fmt.Errorf("打洞失败且中继不可用: %w", rerr)
 	}

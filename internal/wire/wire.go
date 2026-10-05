@@ -40,15 +40,35 @@ type Conn struct {
 	rw   io.ReadWriter
 	aead cipher.AEAD
 	seq  uint64 // 发送序号，作为 nonce 前缀 material
+
+	// dirTag/peerTag 方向标签（nonce 首字节）。2026-10-05 审计 P1 修复：
+	// 此前两侧共用同一 data 密钥且 seq 均从 0 起算——发送方首帧 MsgMeta 与
+	// 接收方首帧 MsgReady 的 key+nonce 完全相同（中继路径明文 TCP 上密钥流
+	// 重用泄漏双向明文异或；Poly1305 一次性密钥重用可伪造合法帧）。现约定
+	// 发送侧写 dirSend/读 dirRecv，接收侧写 dirRecv/读 dirSend，双向 nonce
+	// 空间恒不相交。
+	dirTag  byte
+	peerTag byte
 }
 
-// New 以 32 字节会话密钥构造。两侧须用同一密钥。
-func New(rw io.ReadWriter, key [32]byte) (*Conn, error) {
+// 方向标签取可打印 ASCII，便于抓包排查；无密码学含义（仅分离 nonce 空间）。
+const (
+	dirSend byte = 'S' // 发送方→接收方方向的帧
+	dirRecv byte = 'R' // 接收方→发送方方向的帧
+)
+
+// New 以 32 字节会话密钥构造；isSender 标明本端角色（发送侧/接收侧），
+// 决定本端出站帧的方向标签。
+func New(rw io.ReadWriter, key [32]byte, isSender bool) (*Conn, error) {
 	aead, err := chacha20poly1305.New(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("wire: %w", err)
 	}
-	return &Conn{rw: rw, aead: aead}, nil
+	dir, peer := dirSend, dirRecv
+	if !isSender {
+		dir, peer = dirRecv, dirSend
+	}
+	return &Conn{rw: rw, aead: aead, dirTag: dir, peerTag: peer}, nil
 }
 
 // DeriveKey 从 PAKE 会话密钥按用途派生子密钥。
@@ -71,6 +91,7 @@ func (c *Conn) WriteMsg(msgType byte, body []byte) error {
 	plaintext = append(plaintext, body...)
 
 	nonce := make([]byte, chacha20poly1305.NonceSize)
+	nonce[0] = c.dirTag
 	binary.BigEndian.PutUint64(nonce[4:], c.seq)
 	c.seq++
 
@@ -103,6 +124,11 @@ func (c *Conn) ReadMsg() (byte, []byte, error) {
 		return 0, nil, err
 	}
 	nonce, ct := buf[:chacha20poly1305.NonceSize], buf[chacha20poly1305.NonceSize:]
+	// 入站帧必须携带对端方向标签：错标签=密钥不一致或流错乱，直接拒
+	// （错口令场景本就在 AEAD Open 处暴露，此处提前到标签位）
+	if nonce[0] != c.peerTag {
+		return 0, nil, ErrCorrupt
+	}
 	plaintext, err := c.aead.Open(nil, nonce, ct, nil)
 	if err != nil {
 		return 0, nil, ErrCorrupt
