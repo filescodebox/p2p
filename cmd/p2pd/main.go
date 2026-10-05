@@ -139,7 +139,9 @@ func main() {
 		"port", cfg.Server.Port,
 		"registration_mode", cfg.Registration.Mode,
 		"admin_enabled", cfg.Admin.Password != "",
-		"relay", "M3 未实现",
+		"relay_enabled", cfg.Relay.Enabled,
+		"relay_port", cfg.Relay.Port,
+		"reflector_enabled", cfg.Reflector.Enabled,
 	)
 
 	// 优雅停机编排(kit/shutdown):teardown(取消根 ctx→清扫/反射器/中继退出)

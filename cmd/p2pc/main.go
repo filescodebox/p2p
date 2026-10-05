@@ -81,7 +81,7 @@ func send(args []string) {
 	opt := commonFlags(fs)
 	var code string
 	fs.StringVar(&code, "code", "", "指定口令(缺省自动生成)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs.FlagSet, args); err != nil {
 		os.Exit(2)
 	}
 	if fs.NArg() < 1 {
@@ -110,7 +110,7 @@ func receive(args []string) {
 	opt := commonFlags(fs)
 	out, _ := os.Getwd()
 	fs.StringVar(&out, "out", out, "接收目录")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs.FlagSet, args); err != nil {
 		os.Exit(2)
 	}
 	if fs.NArg() < 1 {
@@ -129,6 +129,28 @@ func receive(args []string) {
 	}
 	abs, _ := filepath.Abs(outPath)
 	fmt.Printf("\n✓ 接收完成: %s\n", abs)
+}
+
+// parseArgs 位置无关的 flag 解析:Go flag 包遇首个非 flag 参数即停,
+// 导致 "p2pc send 文件 --code X" 里文件后的旗标全被忽略(215 实测踩坑)。
+// 循环 Parse:每轮摘出一个位置参数继续解析;结束后以纯位置参数收尾,
+// 已设旗标值保持不变,fs.Args() 即全部位置参数。
+func parseArgs(fs *flag.FlagSet, args []string) error {
+	var positional []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		remaining := fs.Args()
+		if len(remaining) == 0 {
+			break
+		}
+		positional = append(positional, remaining[0])
+		rest = remaining[1:]
+	}
+	_ = fs.Parse(positional)
+	return nil
 }
 
 func fail(err error) {
