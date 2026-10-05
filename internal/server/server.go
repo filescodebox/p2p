@@ -102,7 +102,14 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.Handle("GET /metrics", promHandler(s.metrics.reg))
+	// /metrics 门禁(2026-10-05 审计 P3):配置了管理口令时同 adminGate 校验
+	// (Prometheus 抓取侧配 Authorization: Bearer <FCB_P2P_ADMIN_PASSWORD>);
+	// 未配置口令保持开放(默认部署兼容,文档声明)。
+	var metricsHandler http.Handler = promHandler(s.metrics.reg)
+	if s.cfg.Admin.Password != "" {
+		metricsHandler = s.adminGate(metricsHandler.ServeHTTP)
+	}
+	mux.Handle("GET /metrics", metricsHandler)
 
 	s.route(mux, "POST /v1/nodes/register", "register", s.writeLim, s.handleRegister)
 	s.route(mux, "POST /v1/nodes/heartbeat", "heartbeat", s.writeLim, s.handleRegister) // 与 register 同语义(幂等 upsert)

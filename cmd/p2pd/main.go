@@ -51,21 +51,25 @@ func main() {
 	slog.SetDefault(logger)
 
 	svc := registry.New(registry.Params{
-		Store:          memory.New(),
-		RequireToken:   registrationToken(cfg),
-		MinNodeTTL:     cfg.Registration.MinNodeTTL,
-		MaxNodeTTL:     cfg.Registration.MaxNodeTTL,
-		MaxAnnounces:   cfg.Announce.MaxPerNode,
-		MaxAnnounceTTL: cfg.Announce.MaxTTL,
+		Store:             memory.New(),
+		RequireToken:      registrationToken(cfg),
+		MinNodeTTL:        cfg.Registration.MinNodeTTL,
+		MaxNodeTTL:        cfg.Registration.MaxNodeTTL,
+		MaxAnnounces:      cfg.Announce.MaxPerNode,
+		MaxAnnounceTTL:    cfg.Announce.MaxTTL,
+		MaxNodes:          cfg.Registration.MaxNodes,
+		MaxTotalAnnounces: cfg.Announce.MaxTotal,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	metrics := server.NewMetrics()
 	srv := server.New(ctx, server.Params{
 		Service: svc,
 		Config:  *cfg,
 		Logger:  logger,
+		Metrics: metrics,
 		Version: version.Version,
 	})
 
@@ -79,6 +83,10 @@ func main() {
 				return
 			case <-t.C:
 				nodes, announces := svc.Sweep(context.Background())
+				// 刷新活跃量仪表(2026-10-05 审计运维项:此前仪表未接线恒 0)
+				if liveNodes, liveAnnounces, err := svc.Stats(context.Background()); err == nil {
+					metrics.SetGauges(liveNodes, liveAnnounces)
+				}
 				if nodes > 0 || announces > 0 {
 					logger.Info("清扫完成", "nodes_expired", nodes, "announces_expired", announces)
 				}

@@ -12,6 +12,7 @@ package wire
 
 import (
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -71,14 +72,20 @@ func New(rw io.ReadWriter, key [32]byte, isSender bool) (*Conn, error) {
 	return &Conn{rw: rw, aead: aead, dirTag: dir, peerTag: peer}, nil
 }
 
-// DeriveKey 从 PAKE 会话密钥按用途派生子密钥。
+// DeriveKey 从 PAKE 会话密钥按用途派生子密钥（HKDF-SHA256，salt 空即
+// hash-len 零串，info 绑定用途标签与协议域）。2026-10-05 审计 P3：原实现为
+// sha256(session||label) 裸拼接，已按最佳实践换 HKDF；输出随本变更整体
+// 轮换（与方向标签 nonce 修复同属传输协议破坏性变更，客户端须同版升级）。
 func DeriveKey(session []byte, label string) [32]byte {
-	h := sha256.New()
-	h.Write(session)
-	h.Write([]byte("fcb-p2p:" + label))
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out
+	out, err := hkdf.Key(sha256.New, session, nil, "fcb-p2p/v2/"+label, 32)
+	if err != nil || len(out) != 32 {
+		// HKDF-SHA256 输出 32B 不会失败；防御性兜底
+		sum := sha256.Sum256(session)
+		return sum
+	}
+	var k [32]byte
+	copy(k[:], out)
+	return k
 }
 
 // WriteMsg 编码、加密并写出一条消息。

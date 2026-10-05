@@ -72,12 +72,16 @@ func marshalFrame(f serverFrame) ([]byte, bool) {
 
 // ---- WS 升级与准入 ----
 
-// 升级器不做浏览器 Origin 限制：对等端为桌面/CLI/服务器原生客户端，
-// 准入由 hello 帧的节点签名把守（浏览器不是 M3 直传对等端）。
+// 升级器拒绝浏览器 Origin（2026-10-05 审计 P3）：对等端为桌面/CLI/服务器
+// 原生客户端（Go ws 库不发 Origin 头），浏览器不是 M3 直传对等端——携带
+// Origin 的一律拒绝，防恶意网页驱使访问者浏览器连信令耗资源/刷限流配额。
+// 真正的准入仍由 hello 帧节点签名把守。
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	CheckOrigin:     func(*http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		return r.Header.Get("Origin") == ""
+	},
 }
 
 // Handler 返回挂入 HTTP 面的信令端点（GET /v1/channel/{hash}）。

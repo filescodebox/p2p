@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/filescodebox/kit/ratelimit"
@@ -31,14 +32,42 @@ func recoverMW(log *slog.Logger, next http.Handler) http.Handler {
 }
 
 // requestLogMW 请求访问日志(方法/路径/状态/耗时)。
+// 路径含 code_hash 的路由(announces/resolve/channel)脱敏为路由名+前 8 位
+// (2026-10-05 审计 P3:明文记录口令哈希让"注册中心零知识"承诺在日志层打折,
+// 泄露的日志可被用于定向阻断配对/离线枚举)。
 func requestLogMW(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
-		log.Info("http", "method", r.Method, "path", r.URL.Path,
+		log.Info("http", "method", r.Method, "path", redactPath(r.URL.Path),
 			"status", rec.status, "dur_ms", time.Since(start).Milliseconds())
 	})
+}
+
+// redactPath 对携带 64 位 hex 段的路径脱敏(保留段前 8 位)。
+func redactPath(p string) string {
+	seg := strings.LastIndexByte(p, '/')
+	if seg < 0 {
+		return p
+	}
+	last := p[seg+1:]
+	if len(last) == 64 && isAllHex(last) {
+		return p[:seg+1] + last[:8] + "…"
+	}
+	return p
+}
+
+func isAllHex(s string) bool {
+	for _, c := range s {
+		isDigit := c >= '0' && c <= '9'
+		isLower := c >= 'a' && c <= 'f'
+		isUpper := c >= 'A' && c <= 'F'
+		if !isDigit && !isLower && !isUpper {
+			return false
+		}
+	}
+	return true
 }
 
 // statusRecorder 捕获响应状态码。

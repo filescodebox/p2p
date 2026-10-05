@@ -209,23 +209,33 @@ func (h *Hub) join(hash string, p *peer) (JoinOutcome, *session, error) {
 	return JoinWaiting, sess, nil
 }
 
-// leave 对等端退出：摘除会话（首个触发者负责删除+扣指标），通知幸存者，断开双方。
+// leave 对等端退出：仅摘除退出方。对端仍连着时保留会话回等待位，新对端可
+// 直接补位配对（2026-10-05 审计 P2：此前任一端退出即删整个会话并断开双方，
+// 知道 hash 的第三方可"配对即断"反复杀死会话，阻塞该口令的传输）。
+// 会话最终回收由 janitor 按 SessionTTL 兜底；对端若为旧客户端，收到
+// peer_left 自行退出时会走同一路径清理空会话，语义收敛不变。
 func (h *Hub) leave(sess *session, p *peer) {
-	removed := false
+	sess.remove(p)
+
 	h.mu.Lock()
-	if cur, ok := h.sessions[sess.hash]; ok && cur == sess {
-		delete(h.sessions, sess.hash)
-		removed = true
+	empty := true
+	for _, q := range sess.snapshot() {
+		if q != nil {
+			empty = false
+			break
+		}
+	}
+	if empty {
+		if cur, ok := h.sessions[sess.hash]; ok && cur == sess {
+			delete(h.sessions, sess.hash)
+			h.metrics.SignalingSessions(-1)
+		}
 	}
 	h.mu.Unlock()
-	if removed {
-		h.metrics.SignalingSessions(-1)
-	}
 
-	sess.remove(p)
 	if other := sess.other(p); other != nil {
 		enqueue(other, serverFrame{Type: "peer_left"})
-		closePeer(other) // writePump 会先冲刷 peer_left 再握手关闭
+		// 不再 closePeer(other)：对端保留在会话内等补位
 	}
 	closePeer(p)
 }

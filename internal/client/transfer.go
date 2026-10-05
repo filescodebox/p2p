@@ -141,7 +141,9 @@ func recvFile(w *wire.Conn, dir string, progress func(got, total int64)) (string
 	if fi, err := os.Stat(out); err == nil && !fi.IsDir() && fi.Size() <= meta.Size {
 		offset = fi.Size() // 断点续传起点
 	}
-	f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY, 0o644)
+	// 0600 落盘（2026-10-05 审计 P3：传输文件默认私密，0644 让多用户主机上
+	// 其他本地用户可读）
+	f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
@@ -200,6 +202,9 @@ func recvFile(w *wire.Conn, dir string, progress func(got, total int64)) (string
 		return "", err
 	}
 	if !fin.OK {
+		// 校验失败删除半成品（2026-10-05 审计 P3：坏内容不再以正式文件名残留）
+		_ = f.Close()
+		_ = os.Remove(out)
 		return "", errors.New(fin.Message)
 	}
 	return out, nil

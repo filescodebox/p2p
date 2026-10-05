@@ -79,12 +79,16 @@ type Registration struct {
 	// MinNodeTTL/MaxNodeTTL 限制节点租约时长,节点须周期心跳续租。
 	MinNodeTTL time.Duration
 	MaxNodeTTL time.Duration
+	// MaxNodes 全局节点租约上限(2026-10-05 审计 P2:开放注册内存耗尽防护)。
+	MaxNodes int
 }
 
 // Announce 公告(口令路由)配额。
 type Announce struct {
 	MaxPerNode int
 	MaxTTL     time.Duration
+	// MaxTotal 全局公告上限(内存耗尽防护)。
+	MaxTotal int
 }
 
 // Admin 管理端点。Password 为空时管理 API 整体禁用(403)。
@@ -110,6 +114,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("registration.max_node_ttl", 24*time.Hour)
 	v.SetDefault("announce.max_per_node", 1000)
 	v.SetDefault("announce.max_ttl", 168*time.Hour)
+	v.SetDefault("registration.max_nodes", 5000)
+	v.SetDefault("announce.max_total", 50000)
 	v.SetDefault("admin.password", "")
 	v.SetDefault("log.level", "info")
 	// 信令信道（M3；准入由节点签名把守，默认开）

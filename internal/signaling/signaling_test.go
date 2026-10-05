@@ -201,12 +201,26 @@ func TestPairingAndRelay(t *testing.T) {
 	hello(t, connC, c, hash, ts)
 	expectClose(t, connC, closeBusy)
 
-	// A 断开 → B 收 peer_left 再被关闭
+	// A 断开 → B 收 peer_left 且连接保留（新语义：会话回等待位等补位，
+	// 防"配对即断"杀会话——2026-10-05 审计 P2）
 	_ = connA.Close()
-	frames := expectClose(t, connB, websocket.CloseNormalClosure)
-	if len(frames) == 0 || frames[len(frames)-1].Type != "peer_left" {
-		t.Fatalf("B 应收到 peer_left,得到 %v", frames)
+	if f := mustFrame(t, connB); f.Type != "peer_left" {
+		t.Fatalf("B 应收到 peer_left,得到 %s", f.Type)
 	}
+
+	// C 补位接入 → 与 B 直接配对（B 收到新 paired,peer_id=C）
+	connC2 := dial(t, ws, hash)
+	hello(t, connC2, c, hash, ts)
+	if f := mustFrame(t, connB); f.Type != "paired" || f.PeerID != c.id {
+		t.Fatalf("B 应收到与 C 的 paired,得到 %+v", f)
+	}
+	if f := mustFrame(t, connC2); f.Type != "paired" || f.PeerID != b.id {
+		t.Fatalf("C 应收到 paired(peer_id=%s),得到 %+v", b.id, f)
+	}
+
+	// B、C 相继断开 → 会话清空被回收（无泄漏）
+	_ = connB.Close()
+	_ = connC2.Close()
 }
 
 func TestHelloAuthFailures(t *testing.T) {
@@ -387,11 +401,11 @@ func TestOversizeFrameRejected(t *testing.T) {
 	if len(frames) == 0 || frames[0].Type != "error" {
 		t.Fatalf("超限帧应先收 error 帧,得到 %v", frames)
 	}
-	// B 收 peer_left
-	framesB := expectClose(t, connB, websocket.CloseNormalClosure)
-	if len(framesB) == 0 || framesB[len(framesB)-1].Type != "peer_left" {
-		t.Fatalf("B 应收到 peer_left,得到 %v", framesB)
+	// B 收 peer_left 但连接保留（新语义：留等待位等补位）
+	if f := mustFrame(t, connB); f.Type != "peer_left" {
+		t.Fatalf("B 应收到 peer_left,得到 %s", f.Type)
 	}
+	_ = connB.Close()
 }
 
 func TestJoinPayloadContract(t *testing.T) {

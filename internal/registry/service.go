@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/filescodebox/p2p/internal/store"
@@ -30,14 +31,30 @@ type Params struct {
 	RequireToken   string
 	MinNodeTTL     time.Duration
 	MaxNodeTTL     time.Duration
-	MaxAnnounces   int
+	MaxAnnounces   int // 单节点公告配额
 	MaxAnnounceTTL time.Duration
+	// MaxNodes / MaxTotalAnnounces 全局容量上限(2026-10-05 审计 P2:开放注册
+	// 下无限堆节点/公告可内存耗尽;0 = 用内部默认)。
+	MaxNodes          int
+	MaxTotalAnnounces int
 }
+
+const (
+	defaultMaxNodes          = 5000
+	defaultMaxTotalAnnounces = 50000
+	maxURLLen                = 2048
+)
 
 // Service 注册中心业务逻辑。并发安全(依赖 Store 的并发安全)。
 type Service struct {
 	p   Params
 	now func() time.Time
+
+	// nonce 去重(签名时间戳窗口内同一 (node_id,nonce) 只接受一次——
+	// 2026-10-05 审计 P3:此前截获的请求可在 ±5min 窗口内重放)
+	nonceMu   sync.Mutex
+	nonceSeen map[string]time.Time
+	nonceOps  int
 }
 
 // New 构造服务。
@@ -96,6 +113,10 @@ func (s *Service) RegisterNode(ctx context.Context, in RegisterInput, ip string)
 	if s.p.RequireToken != "" && subtle.ConstantTimeCompare([]byte(in.Token), []byte(s.p.RequireToken)) != 1 {
 		return store.Node{}, fmt.Errorf("%w: registration token 不匹配", ErrUnauthorized)
 	}
+	// node_id 归一化小写(2026-10-05 审计 P3:hex 大小写变体可绕过按字符串
+	// 计数的配额;合法客户端 hex.EncodeToString 恒小写,归一不影响签名——
+	// 载荷随归一化后的 ID 构造,大写变体的签名自然失效)
+	in.NodeID = strings.ToLower(in.NodeID)
 	pub, err := parseNodeID(in.NodeID)
 	if err != nil {
 		return store.Node{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
@@ -124,6 +145,22 @@ func (s *Service) RegisterNode(ctx context.Context, in RegisterInput, ip string)
 		return store.Node{}, err
 	}
 
+	// nonce 去重(签名校验通过后标记,不因攻击者伪造 nonce 提前占位)
+	if !s.markNonce(in.NodeID, in.Nonce, s.now()) {
+		return store.Node{}, fmt.Errorf("%w: nonce 重放", ErrInvalidRequest)
+	}
+
+	// 全局节点容量上限(已注册节点续租不受限)
+	maxNodes := s.p.MaxNodes
+	if maxNodes <= 0 {
+		maxNodes = defaultMaxNodes
+	}
+	if _, ok, gerr := s.p.Store.GetNode(ctx, in.NodeID); gerr == nil && !ok {
+		if live, cerr := s.countLiveNodes(ctx); cerr == nil && live >= maxNodes {
+			return store.Node{}, fmt.Errorf("%w: 全局节点数达上限 %d", ErrQuotaExceeded, maxNodes)
+		}
+	}
+
 	now := s.now()
 	n := store.Node{
 		ID: in.NodeID, URL: in.URL, Name: name, Version: version, Caps: caps,
@@ -135,9 +172,66 @@ func (s *Service) RegisterNode(ctx context.Context, in RegisterInput, ip string)
 	return n, nil
 }
 
+// markNonce 记录并检查 (node_id,nonce) 是否首次出现;窗口 2×时钟偏移。
+func (s *Service) markNonce(nodeID, nonce string, now time.Time) bool {
+	const rememberWindow = 2 * MaxClockSkew
+	s.nonceMu.Lock()
+	defer s.nonceMu.Unlock()
+	if s.nonceSeen == nil {
+		s.nonceSeen = make(map[string]time.Time, 1024)
+	}
+	s.nonceOps++
+	if s.nonceOps%4096 == 0 { // 周期清理过期项,防无界增长
+		for k, at := range s.nonceSeen {
+			if now.Sub(at) > rememberWindow {
+				delete(s.nonceSeen, k)
+			}
+		}
+	}
+	key := nodeID + "|" + nonce
+	if at, ok := s.nonceSeen[key]; ok && now.Sub(at) <= rememberWindow {
+		return false
+	}
+	s.nonceSeen[key] = now
+	return true
+}
+
+// countLiveNodes 未过期节点数(容量上限判定用)。
+func (s *Service) countLiveNodes(ctx context.Context) (int, error) {
+	list, err := s.p.Store.ListNodes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := s.now()
+	live := 0
+	for _, n := range list {
+		if !n.Expired(now) {
+			live++
+		}
+	}
+	return live, nil
+}
+
+// countLiveAnnounces 未过期公告数。
+func (s *Service) countLiveAnnounces(ctx context.Context) (int, error) {
+	list, err := s.p.Store.ListAnnounces(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := s.now()
+	live := 0
+	for _, a := range list {
+		if !a.Expired(now) {
+			live++
+		}
+	}
+	return live, nil
+}
+
 // Announce 宣告口令路由。要求节点处于有效租约内;
 // 同一 code_hash 已被其他未过期节点占有时返回 ErrConflict(先到先得)。
 func (s *Service) Announce(ctx context.Context, in AnnounceInput) (store.Announce, error) {
+	in.NodeID = strings.ToLower(in.NodeID)
 	node, err := s.liveNode(ctx, in.NodeID)
 	if err != nil {
 		return store.Announce{}, err
@@ -179,6 +273,13 @@ func (s *Service) Announce(ctx context.Context, in AnnounceInput) (store.Announc
 		if cnt >= s.p.MaxAnnounces {
 			return store.Announce{}, fmt.Errorf("%w: 节点公告数达上限 %d", ErrQuotaExceeded, s.p.MaxAnnounces)
 		}
+		maxTotal := s.p.MaxTotalAnnounces
+		if maxTotal <= 0 {
+			maxTotal = defaultMaxTotalAnnounces
+		}
+		if live, cerr := s.countLiveAnnounces(ctx); cerr == nil && live >= maxTotal {
+			return store.Announce{}, fmt.Errorf("%w: 全局公告数达上限 %d", ErrQuotaExceeded, maxTotal)
+		}
 	}
 	a := store.Announce{
 		CodeHash: hash, NodeID: in.NodeID, ExpiresAt: expiresAt,
@@ -215,6 +316,7 @@ func (s *Service) Resolve(ctx context.Context, codeHash string) (store.Announce,
 // RevokeAnnounce 撤销口令公告,仅宣告节点本身可撤。
 // 全部校验通过后才删除,避免先删后验。
 func (s *Service) RevokeAnnounce(ctx context.Context, in RevokeInput) error {
+	in.NodeID = strings.ToLower(in.NodeID)
 	node, err := s.liveNode(ctx, in.NodeID)
 	if err != nil {
 		return err
@@ -248,6 +350,7 @@ func (s *Service) RevokeAnnounce(ctx context.Context, in RevokeInput) error {
 
 // DeregisterNode 注销节点并级联清除其公告,仅节点私钥持有者可调。
 func (s *Service) DeregisterNode(ctx context.Context, in RevokeInput) error {
+	in.NodeID = strings.ToLower(in.NodeID)
 	node, err := s.liveNode(ctx, in.NodeID)
 	if err != nil {
 		return err
@@ -365,6 +468,9 @@ func (s *Service) liveNodeErr(ctx context.Context, id string) (store.Node, error
 }
 
 func validNodeURL(raw string) error {
+	if len(raw) > maxURLLen {
+		return fmt.Errorf("url 超长(>%d)", maxURLLen)
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("url 解析失败: %v", err)

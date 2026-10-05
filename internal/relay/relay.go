@@ -27,6 +27,9 @@ const (
 	maxLineLen     = maxTokenLen + 16
 	pipeBufSize    = 32 << 10
 	minBytesPerSec = 32 * 1024 // 限速下限,防误配成近似断流
+	// maxConnsPerIP 单 IP 并发连接上限(2026-10-05 审计 P2:此前随机 token
+	// 可占满全局 1024 等待槽令所有用户不可用;读写阶段一并计入)
+	maxConnsPerIP = 16
 )
 
 // Serve 阻塞服务中继，直到 ctx 结束或 listener 关闭。
@@ -37,6 +40,7 @@ func Serve(ctx context.Context, ln net.Listener, bytesPerSec int64, log *slog.Lo
 	s := &server{
 		waiting:     make(map[string]net.Conn),
 		since:       make(map[string]time.Time),
+		perIP:       make(map[string]int),
 		bytesPerSec: bytesPerSec,
 		log:         log,
 	}
@@ -81,11 +85,30 @@ type server struct {
 	mu          sync.Mutex
 	waiting     map[string]net.Conn
 	since       map[string]time.Time
+	perIP       map[string]int
 	bytesPerSec int64
 	log         *slog.Logger
 }
 
 func (s *server) handle(ctx context.Context, conn net.Conn) {
+	ip := remoteIP(conn)
+	s.mu.Lock()
+	if s.perIP[ip] >= maxConnsPerIP {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
+	s.perIP[ip]++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.perIP[ip]--
+		if s.perIP[ip] <= 0 {
+			delete(s.perIP, ip)
+		}
+		s.mu.Unlock()
+	}()
+
 	_ = conn.SetDeadline(time.Now().Add(waitingTimeout))
 	// 逐字节读首行:bufio 会预读多字节,把客户端紧随其后的首帧吞进缓冲
 	token, ok := readLine(conn, maxTokenLen)
@@ -171,6 +194,15 @@ func newBucket(bytesPerSec int64) *rate.Limiter {
 		return nil
 	}
 	return rate.NewLimiter(rate.Limit(bytesPerSec), int(bytesPerSec)) // 1s 突发
+}
+
+// remoteIP 取对端 IP（去端口；解析失败回退整串）。
+func remoteIP(conn net.Conn) string {
+	addr := conn.RemoteAddr().String()
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }
 
 func isHex(s string) bool {
