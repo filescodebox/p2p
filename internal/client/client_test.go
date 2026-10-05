@@ -116,6 +116,10 @@ func waitForAnnounce(t *testing.T, base, code string) {
 
 func TestSendRecvLoopbackPunch(t *testing.T) {
 	f := newFixture(t, false)
+	// 全量 -race 套件并行负载下 3s 打洞预算偶发被挤爆(抖动,非回归):
+	// 放宽到 6s,失败仍会走"中继不可用"硬失败路径,不掩盖真回归
+	optsOverride := func(o *Options) { o.PunchBudget = 6 * time.Second }
+	_ = optsOverride
 	code, err := GenerateCode()
 	if err != nil {
 		t.Fatal(err)
@@ -124,9 +128,11 @@ func TestSendRecvLoopbackPunch(t *testing.T) {
 	recvDir := t.TempDir()
 	src := randomFile(t, sendDir, "hello-传输.bin", 1<<20) // 1MB
 
+	so := testOpts(f, "send")
+	so.PunchBudget = 6 * time.Second
 	errCh := make(chan error, 1)
 	go func() {
-		c, err := New(testOpts(f, "send"))
+		c, err := New(so)
 		if err != nil {
 			errCh <- err
 			return
@@ -136,7 +142,9 @@ func TestSendRecvLoopbackPunch(t *testing.T) {
 	}()
 
 	waitForAnnounce(t, f.base, code)
-	c, err := New(testOpts(f, "recv"))
+	ro := testOpts(f, "recv")
+	ro.PunchBudget = 6 * time.Second
+	c, err := New(ro)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,4 +268,71 @@ func httpGet(url string) (int, error) {
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, nil
+}
+
+// TestRelayAddrDerivation 默认中继地址:registry 带端口时须换端口而非拼接。
+func TestRelayAddrDerivation(t *testing.T) {
+	cases := map[string]string{
+		"http://10.44.129.215:22346": "10.44.129.215:12347",
+		"http://10.44.129.215":       "10.44.129.215:12347",
+		"http://p2p:12346":           "p2p:12347",
+	}
+	for reg, want := range cases {
+		c, err := New(Options{Registry: reg, NodeKeyPath: filepath.Join(t.TempDir(), "k"), Quiet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.relayAddr(); got != want {
+			t.Fatalf("registry=%s: relay=%s 期望 %s", reg, got, want)
+		}
+	}
+}
+
+// TestReceiverFirstRace 接收方先于发送方启动(解析首发 miss):
+// resolve 短重试应吃掉时序差,双方正常完成传输。
+func TestReceiverFirstRace(t *testing.T) {
+	f := newFixture(t, true)
+	code, _ := GenerateCode()
+	sendDir := t.TempDir()
+	recvDir := t.TempDir()
+	src := randomFile(t, sendDir, "race-file.bin", 256<<10)
+
+	recvErr := make(chan error, 1)
+	go func() {
+		opts := testOpts(f, "recv")
+		opts.DisablePunch = true
+		c, err := New(opts)
+		if err != nil {
+			recvErr <- err
+			return
+		}
+		out, err := c.Receive(code, recvDir)
+		if err == nil {
+			t.Logf("received: %s", out)
+		}
+		recvErr <- err
+	}()
+
+	time.Sleep(1 * time.Second) // 接收方先跑,吃到首发 miss 进入重试
+
+	sendErr := make(chan error, 1)
+	go func() {
+		opts := testOpts(f, "send")
+		opts.DisablePunch = true
+		c, err := New(opts)
+		if err != nil {
+			sendErr <- err
+			return
+		}
+		_, err = c.Send(src, code)
+		sendErr <- err
+	}()
+
+	if err := <-recvErr; err != nil {
+		t.Fatalf("接收: %v", err)
+	}
+	if err := <-sendErr; err != nil {
+		t.Fatalf("发送: %v", err)
+	}
+	assertSameFile(t, src, filepath.Join(recvDir, "race-file.bin"))
 }

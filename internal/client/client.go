@@ -92,7 +92,13 @@ func (c *Client) relayAddr() string {
 	if c.opt.RelayAddr != "" {
 		return c.opt.RelayAddr
 	}
-	return hostOf(c.opt.Registry) + ":12347"
+	// registry 常带端口(http://host:22346),默认中继=同主机换 12347 端口
+	// ——直接拼接会得到 host:22346:12347(215 部署实测踩坑)。
+	host := hostOf(c.opt.Registry)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host + ":12347"
 }
 
 // setupNode 注册节点租约；返回 best-effort 注销函数。
@@ -110,6 +116,24 @@ func (c *Client) setupNode() func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		c.reg.deregister(ctx, c.id)
+	}
+}
+
+// resolveRetry 解析带重试:500ms 间隔,超过 wait 后以最后一次错误返回。
+func (c *Client) resolveRetry(code string, wait time.Duration) (string, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		id, err := c.reg.resolve(ctx, code)
+		cancel()
+		if err == nil {
+			return id, nil
+		}
+		if !time.Now().After(deadline) {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		return "", fmt.Errorf("解析: %w", err)
 	}
 }
 
@@ -194,12 +218,12 @@ func (c *Client) Receive(code, dir string) (string, error) {
 	dereg := c.setupNode()
 	defer dereg()
 
-	// resolve 先行:钉定发送方身份(防信道被第三方抢入)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	senderID, err := c.reg.resolve(ctx, code)
+	// resolve 先行:钉定发送方身份(防信道被第三方抢入)。
+	// 带短重试——接收方常先于发送方启动(发送方生成口令后才公告),
+	// 首发 miss 属启动时序而非口令不存在。
+	senderID, err := c.resolveRetry(code, 15*time.Second)
 	if err != nil {
-		return "", fmt.Errorf("解析: %w", err)
+		return "", err
 	}
 
 	ch, err := joinChannel(c.opt.Registry, code, c.id, 10*time.Minute)
