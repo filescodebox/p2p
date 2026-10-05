@@ -16,7 +16,8 @@ FilesCodeBox 生态的 **P2P 联邦注册中心**：让任意多个 FilesCodeBox
 | 节点注册与心跳 | Ed25519 签名租约（node_id 即公钥），TTL 到期自动清扫 | ✅ v0.1 |
 | 口令联邦路由 | `SHA-256(口令) → 源节点`，取件方直连源节点、源节点本地校验口令，零跨节点信任 | ✅ v0.1 |
 | 信令信道 | WS 同口令双方配对 + 不透明握手帧转发（节点签名准入，服务端零知识） | ✅ v0.2 |
-| **设备直传** | PAKE → 加密候选交换 → UDP 同时开洞 → 失败走加密中继；AEAD 传输+断点续传+sha256 校验 | ✅ v0.3（`p2pc` 参考客户端） |
+| **设备直传** | PAKE → 加密候选交换 → UDP 同时开洞 → 失败走加密中继；AEAD 传输+断点续传+sha256 校验 | ✅ v0.3（`p2pc` 参考客户端，六平台二进制随 Release 发布） |
+| 安全加固 | wire AEAD 跨方向 nonce 重用修复、注册 token 恒时比较、注册中心容量治理、中继每 IP 限流、信令会话存活检查、HKDF 密钥派生 | ✅ v0.4 |
 
 非目标：内容 DHT 去中心化、离线传输、文件中转存储。
 
@@ -95,7 +96,7 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 撤销公告:    node_id | code_hash | ts
 ```
 
-`ts` 为 unix 秒，允许 ±300s 偏移。参考实现见 [scripts/smokegen](./scripts/smokegen)（生态接入后由 core `federation` 域服务封装）。
+`ts` 为 unix 秒，允许 ±300s 偏移。参考实现见 [scripts/smokegen](./scripts/smokegen)（生态侧已由 core `federation` 域服务封装）。
 
 ## 信令信道协议（M3）
 
