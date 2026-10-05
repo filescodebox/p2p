@@ -1,6 +1,6 @@
 name: Release
-# 打 v* tag → 多架构镜像推 ghcr.io/filescodebox/p2p(amd64+arm64)。
-# p2p 为服务器形态,与 server 仓一致走镜像分发,无二进制跨仓回挂。
+# 打 v* tag → ① 多架构镜像推 ghcr.io/filescodebox/p2p(amd64+arm64);
+# ② p2pc 直传客户端六平台二进制挂本仓 Release 并回挂 hub(桌面端 sidecar/终端用户分发)。
 # 注意:新镜像包默认 private,首个 release 后需在 GitHub Packages 页手动 flip public
 # (fnos 踩过的坑)。provenance=false:buildx 默认认证清单会使 GitHub Packages 页
 # 渲染 500(拉取不受影响,仅 Web UI 坏)。
@@ -49,3 +49,66 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_TIME=${{ steps.meta.outputs.date }}
             GOPROXY=https://proxy.golang.org,direct
+
+  # p2pc 设备直传客户端六平台二进制: 挂本仓 Release(终端用户/桌面端 sidecar 的
+  # 分发渠道——p2pc 在用户设备上跑,镜像里的二进制够不着他们)。
+  # 命名 = Tauri target triple(desktop 仓 CI 按 triple 拉取做 sidecar)。
+  p2pc-binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 交叉编译 p2pc(纯静态 CGO=0)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-w -s -X 'github.com/filescodebox/kit/version.Version=${VERSION}' -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'"
+          mkdir -p out
+          build() { GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o "out/$3" ./cmd/p2pc; }
+          build linux   amd64 p2pc-x86_64-unknown-linux-gnu
+          build linux   arm64 p2pc-aarch64-unknown-linux-gnu
+          build darwin  amd64 p2pc-x86_64-apple-darwin
+          build darwin  arm64 p2pc-aarch64-apple-darwin
+          build windows amd64 p2pc-x86_64-pc-windows-msvc.exe
+          build windows arm64 p2pc-aarch64-pc-windows-msvc.exe
+          (cd out && shasum -a 256 p2pc-* > p2pc-checksums.txt)
+      - name: 挂本仓 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY" --clobber || {
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "p2p $GITHUB_REF_NAME" \
+              --notes "联邦注册中心(p2pd)+设备直传客户端(p2pc)。镜像见 ghcr.io/filescodebox/p2p" \
+              && gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY";
+          }
+
+  # p2pc 二进制回挂生态主仓(产物统一出口)。跨仓写需 P2P_PAT(未配置时本 job
+  # 允许失败,由本地 `gh release upload` 兜底)——与 desktop/fnos 同一约定。
+  attach-to-hub:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    needs: p2pc-binaries
+    steps:
+      - name: 回挂 p2pc 二进制到 hub
+        env:
+          GH_TOKEN: ${{ secrets.P2P_PAT || secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sleep 10
+          gh release view "p2p-$TAG" --repo filescodebox/filescodebox >/dev/null 2>&1 || \
+            gh release create "p2p-$TAG" --repo filescodebox/filescodebox \
+              --title "FilesCodeBox P2P $TAG" \
+              --notes "P2P 联邦:注册中心镜像(ghcr.io/filescodebox/p2p)与设备直传客户端 p2pc(见 Assets,文件名含目标平台 triple)。"
+          mkdir -p /tmp/p2pc
+          gh release download "$TAG" --repo filescodebox/p2p --dir /tmp/p2pc --clobber || true
+          shopt -s nullglob
+          for f in /tmp/p2pc/p2pc-*; do
+            gh release upload "p2p-$TAG" "$f" --repo filescodebox/filescodebox --clobber || true
+          done
+          echo "已回挂到 filescodebox/filescodebox Releases"
