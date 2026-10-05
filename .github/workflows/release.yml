@@ -97,7 +97,7 @@ jobs:
     steps:
       - name: 回挂 p2pc 二进制到 hub
         env:
-          GH_TOKEN: ${{ secrets.P2P_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.P2P_PAT }}
           TAG: ${{ github.ref_name }}
         run: |
           sleep 10
