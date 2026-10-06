@@ -199,7 +199,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 			part = p
 			break
 		}
-		p.Close()
+		_ = p.Close()
 	}
 	if part == nil {
 		writeErr(w, http.StatusBadRequest, "缺少 file 字段")
