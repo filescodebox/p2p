@@ -50,9 +50,11 @@ jobs:
             BUILD_TIME=${{ steps.meta.outputs.date }}
             GOPROXY=https://proxy.golang.org,direct
 
-  # p2pc 设备直传客户端六平台二进制: 挂本仓 Release(终端用户/桌面端 sidecar 的
-  # 分发渠道——p2pc 在用户设备上跑,镜像里的二进制够不着他们)。
-  # 命名 = Tauri target triple(desktop 仓 CI 按 triple 拉取做 sidecar)。
+  # p2pc / p2pc-web 设备直传客户端六平台二进制: 挂本仓 Release(终端用户/桌面端
+  # sidecar 的分发渠道——p2pc 在用户设备上跑,镜像里的二进制够不着他们)。
+  # 命名 = Tauri target triple(desktop 仓 CI 按 triple 拉取做 sidecar);
+  # p2pc-web = 网页模式客户端(老底座桌面: 内置本地 Web UI + 直传,纯静态无
+  # webkit 依赖),资产名同以 p2pc- 开头,复用下方上传/回挂/checksums 通配。
   p2pc-binaries:
     runs-on: ubuntu-latest
     permissions:
@@ -62,20 +64,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: 交叉编译 p2pc(纯静态 CGO=0)
+      - name: 交叉编译 p2pc / p2pc-web(纯静态 CGO=0)
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-w -s -X 'github.com/filescodebox/kit/version.Version=${VERSION}' -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'"
           mkdir -p out
-          build() { GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o "out/$3" ./cmd/p2pc; }
-          build linux   amd64 p2pc-x86_64-unknown-linux-gnu
-          build linux   arm64 p2pc-aarch64-unknown-linux-gnu
-          build darwin  amd64 p2pc-x86_64-apple-darwin
-          build darwin  arm64 p2pc-aarch64-apple-darwin
-          build windows amd64 p2pc-x86_64-pc-windows-msvc.exe
-          build windows arm64 p2pc-aarch64-pc-windows-msvc.exe
+          build() { GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o "out/$3" ./cmd/$4; }
+          build linux   amd64 p2pc-x86_64-unknown-linux-gnu        p2pc
+          build linux   arm64 p2pc-aarch64-unknown-linux-gnu       p2pc
+          build darwin  amd64 p2pc-x86_64-apple-darwin             p2pc
+          build darwin  arm64 p2pc-aarch64-apple-darwin            p2pc
+          build windows amd64 p2pc-x86_64-pc-windows-msvc.exe      p2pc
+          build windows arm64 p2pc-aarch64-pc-windows-msvc.exe     p2pc
+          build linux   amd64 p2pc-web-x86_64-unknown-linux-gnu    p2pcweb
+          build linux   arm64 p2pc-web-aarch64-unknown-linux-gnu   p2pcweb
+          build darwin  amd64 p2pc-web-x86_64-apple-darwin         p2pcweb
+          build darwin  arm64 p2pc-web-aarch64-apple-darwin        p2pcweb
+          build windows amd64 p2pc-web-x86_64-pc-windows-msvc.exe  p2pcweb
+          build windows arm64 p2pc-web-aarch64-pc-windows-msvc.exe p2pcweb
           (cd out && shasum -a 256 p2pc-* > p2pc-checksums.txt)
       - name: 挂本仓 Release
         env:
@@ -84,7 +92,7 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY" --clobber || {
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "p2p $GITHUB_REF_NAME" \
-              --notes "联邦注册中心(p2pd)+设备直传客户端(p2pc)。镜像见 ghcr.io/filescodebox/p2p" \
+              --notes "联邦注册中心(p2pd)+设备直传客户端(p2pc / p2pc-web 网页模式)。镜像见 ghcr.io/filescodebox/p2p" \
               && gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY";
           }
 
@@ -102,7 +110,7 @@ jobs:
         run: |
           sleep 10
           NOTES=$(printf '%s\n\n---\n🗂 **组件仓库**: [filescodebox/p2p](https://github.com/filescodebox/p2p) · **完整变更日志**: [%s](https://github.com/filescodebox/p2p/releases/tag/%s)\n🌐 **生态总览 / Latest**: [filescodebox/filescodebox](https://github.com/filescodebox/filescodebox/releases/latest)\n' \
-            "P2P 联邦:注册中心镜像(ghcr.io/filescodebox/p2p)与设备直传客户端 p2pc(见 Assets,文件名含目标平台 triple)。" "${TAG}" "${TAG}")
+            "P2P 联邦:注册中心镜像(ghcr.io/filescodebox/p2p)与设备直传客户端 p2pc / p2pc-web 网页模式(见 Assets,文件名含目标平台 triple)。" "${TAG}" "${TAG}")
           gh release view "p2p-$TAG" --repo filescodebox/filescodebox >/dev/null 2>&1 || \
             gh release create "p2p-$TAG" --repo filescodebox/filescodebox \
               --title "FilesCodeBox P2P $TAG" \

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FilesCodeBox 直传</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      background: linear-gradient(160deg, #eef1ff, #f7f8fa);
+      padding: 24px 12px;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: linear-gradient(160deg, #16181d, #0f1013); }
+      .card { background: #1d2026 !important; }
+      h1 { color: #e8eaf0 !important; }
+      .hint, .tip { color: #8a8f9c !important; }
+      .log { background: #14161a !important; }
+      input { background: #14161a; border-color: #33363f !important; color: #e8eaf0; }
+      .code { color: #8f94ff !important; }
+      .sec-title { color: #cfd3e0 !important; }
+    }
+    .card {
+      width: 500px; max-width: 96vw; padding: 34px 34px 26px; border-radius: 16px; background: #fff;
+      box-shadow: 0 12px 40px rgba(30, 40, 90, 0.12); text-align: center;
+    }
+    .logo { width: 60px; height: 60px; border-radius: 14px; margin: 0 auto 12px; background: #5b5fe8;
+            display: flex; align-items: center; justify-content: center; }
+    .logo span { color: #fff; font-size: 28px; font-weight: 700; }
+    h1 { font-size: 20px; color: #222; margin-bottom: 4px; }
+    .hint { color: #888; font-size: 13px; margin-bottom: 16px; }
+    .hint .ver { opacity: .75; }
+    input {
+      width: 100%; padding: 10px 13px; border: 1px solid #d8dbe4; border-radius: 8px;
+      font-size: 14px; outline: none; margin-bottom: 10px;
+    }
+    input:focus { border-color: #5b5fe8; }
+    button {
+      padding: 10px 14px; border: 0; border-radius: 8px; background: #5b5fe8;
+      color: #fff; font-size: 14px; cursor: pointer;
+    }
+    button:disabled { opacity: 0.55; cursor: default; }
+    button.ghost { background: transparent; border: 1px solid #c9cdda; color: inherit; }
+    .row { display: flex; gap: 10px; }
+    .row > button { flex: 1; }
+    .divider { margin: 20px 0 14px; border: 0; border-top: 1px dashed #d8dbe4; }
+    .sec-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: inherit; text-align: left; }
+    .code {
+      display: none; font-size: 24px; letter-spacing: 4px; font-weight: 700;
+      color: #4448d8; margin: 10px 0 2px; user-select: all;
+    }
+    .code.ok { color: #1a9c5c !important; }
+    .log {
+      display: none; text-align: left; margin-top: 10px; padding: 10px 12px;
+      background: #f4f5f9; border-radius: 8px; font: 11px/1.55 ui-monospace, Menlo, Consolas, monospace;
+      max-height: 170px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+      color: #555;
+    }
+    .err { color: #d33; font-size: 13px; min-height: 18px; margin-top: 8px; }
+    .tip { margin-top: 12px; font-size: 12px; color: #aab; line-height: 1.7; text-align: left; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"><span>柜</span></div>
+    <h1>FilesCodeBox 直传</h1>
+    <p class="hint">网页模式 · <span class="ver" id="ver"></span></p>
+
+    <div class="sec-title">文件柜</div>
+    <input id="url" placeholder="服务器地址，如 http://10.44.129.215" />
+    <div class="row">
+      <button class="ghost" id="save-cab">保存</button>
+      <button id="open-cab">打开文件柜（浏览器新标签）</button>
+    </div>
+    <div class="err" id="cab-err"></div>
+
+    <hr class="divider" />
+    <div class="sec-title">设备直传（P2P，经中继/打洞，服务端只见密文）</div>
+
+    <input id="registry" placeholder="直传注册中心地址，如 http://p2p.example.com:12346" />
+
+    <div class="row" style="margin-bottom: 10px;">
+      <button class="ghost" id="pick">选择文件发送…</button>
+      <button class="ghost" id="recv">按口令接收</button>
+    </div>
+    <input id="p2p-code" placeholder="输入对方口令接收（存到系统下载目录）" />
+    <div class="code" id="p2p-mycode"></div>
+    <pre class="log" id="p2p-log"></pre>
+    <div class="row" style="margin-top: 10px;">
+      <button id="cancel" style="display:none">取消传输</button>
+    </div>
+    <div class="err" id="p2p-err"></div>
+    <p class="tip" id="p2p-note">发送先取文件到本机临时目录再开始直传；需要可达的 p2pd 注册中心。接收落盘：<span id="out-dir"></span></p>
+  </div>
+
+  <input type="file" id="file" style="display:none" />
+
+  <script>
+    const T = new URLSearchParams(location.search).get('t') || '';
+    const $ = id => document.getElementById(id);
+
+    function api(path) { return '/api/' + path + (path.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(T); }
+    async function postJSON(path, body) {
+      const r = await fetch(api(path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {})
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      return data;
+    }
+
+    function normalizeURL(raw) {
+      let t = raw.trim().replace(/\/+$/, '');
+      if (!t) return '';
+      if (/^https?:\/\//.test(t)) return t;
+      return 'http://' + t;
+    }
+
+    // ── 初始化 ──
+    let st = {};
+    (async () => {
+      st = await (await fetch(api('state'))).json();
+      $('url').value = st.server_url || '';
+      $('registry').value = st.registry || '';
+      $('out-dir').textContent = st.out_dir || '';
+      $('ver').textContent = 'v' + (st.version || '?');
+      if (st.busy) setBusy(true, st.code);
+      sse();
+    })().catch(e => { $('p2p-err').textContent = '初始化失败: ' + e.message; });
+
+    function sse() {
+      const es = new EventSource(api('events'));
+      es.onmessage = e => { try { onEvent(JSON.parse(e.data)); } catch (_) {} };
+      // 断线由 EventSource 自动重连
+    }
+
+    function onEvent(p) {
+      if (p.type === 'code') { showCode(p.code); setBusy(true, p.code); }
+      else if (p.type === 'log') { appendLog(p.line); }
+      else if (p.type === 'exit') { finish(p); }
+      else if (p.type === 'state') { if (!p.busy && busy) setBusy(false); }
+    }
+
+    // ── 文件柜 ──
+    $('save-cab').onclick = async () => {
+      $('cab-err').textContent = '';
+      try {
+        await postJSON('config', { server_url: $('url').value, registry: $('registry').value });
+        $('cab-err').style.color = '#1a9c5c';
+        $('cab-err').textContent = '已保存';
+        setTimeout(() => { $('cab-err').textContent = ''; $('cab-err').style.color = ''; }, 1500);
+      } catch (e) { $('cab-err').textContent = String(e.message || e); }
+    };
+    $('open-cab').onclick = () => {
+      const u = normalizeURL($('url').value);
+      if (!u) { $('cab-err').textContent = '请先填写服务器地址'; return; }
+      window.open(u + '/', '_blank');
+    };
+
+    // ── 设备直传 ──
+    let busy = false;
+
+    $('pick').onclick = () => $('file').click();
+    $('file').onchange = async () => {
+      const f = $('file').files[0];
+      $('file').value = '';
+      if (!f) return;
+      resetP2p();
+      const registry = $('registry').value.trim();
+      if (!registry) { $('p2p-err').textContent = '请填写直传注册中心地址'; return; }
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      $('p2p-err').textContent = '正在取文件到本机（' + f.name + '）…';
+      try {
+        const r = await fetch(api('send?registry=' + encodeURIComponent(registry)), { method: 'POST', body: fd });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        $('p2p-err').textContent = '';
+        showCode(data.code);
+        setBusy(true, data.code);
+      } catch (e) {
+        $('p2p-err').textContent = String(e.message || e);
+      }
+    };
+
+    $('recv').onclick = async () => {
+      resetP2p();
+      const code = $('p2p-code').value.trim();
+      const registry = $('registry').value.trim();
+      if (!code) { $('p2p-err').textContent = '请输入口令'; return; }
+      if (!registry) { $('p2p-err').textContent = '请填写直传注册中心地址'; return; }
+      try {
+        await postJSON('recv', { code, registry });
+        setBusy(true, code);
+      } catch (e) { $('p2p-err').textContent = String(e.message || e); }
+    };
+
+    $('cancel').onclick = async () => {
+      try { await fetch(api('cancel'), { method: 'POST' }); } catch (_) {}
+    };
+
+    function showCode(code) {
+      const el = $('p2p-mycode');
+      el.classList.remove('ok');
+      el.textContent = code;
+      el.style.display = 'block';
+    }
+    function appendLog(line) {
+      const log = $('p2p-log');
+      log.style.display = 'block';
+      log.textContent += line + '\n';
+      log.scrollTop = log.scrollHeight;
+    }
+    function resetP2p() {
+      $('p2p-err').textContent = '';
+      $('p2p-mycode').textContent = '';
+      $('p2p-mycode').style.display = 'none';
+      $('p2p-mycode').classList.remove('ok');
+      $('p2p-log').textContent = '';
+      $('p2p-log').style.display = 'none';
+    }
+    function setBusy(b, code) {
+      busy = b;
+      for (const id of ['pick', 'recv', 'p2p-code', 'registry']) $(id).disabled = b;
+      $('cancel').style.display = b ? 'block' : 'none';
+      if (b && code) showCode(code);
+      if (!b) { $('p2p-mycode').style.display = 'none'; }
+    }
+    function finish(p) {
+      setBusy(false);
+      if (p.exit === 0) {
+        const el = $('p2p-mycode');
+        el.classList.add('ok');
+        el.style.display = 'block';
+        el.textContent = p.path ? '✓ 已接收: ' + p.path : '✓ 传输完成';
+      } else if ((p.err || '').includes('kill')) {
+        $('p2p-err').textContent = '已取消';
+      } else {
+        $('p2p-err').textContent = '传输异常退出（' + (p.err || ('code ' + p.exit)) + '），详见日志';
+      }
+    }
+  </script>
+</body>
+</html>

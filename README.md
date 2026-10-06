@@ -17,7 +17,8 @@ FilesCodeBox 生态的 **P2P 联邦注册中心**：让任意多个 FilesCodeBox
 | 口令联邦路由 | `SHA-256(口令) → 源节点`，取件方直连源节点、源节点本地校验口令，零跨节点信任 | ✅ v0.1 |
 | 信令信道 | WS 同口令双方配对 + 不透明握手帧转发（节点签名准入，服务端零知识） | ✅ v0.2 |
 | **设备直传** | PAKE → 加密候选交换 → UDP 同时开洞 → 失败走加密中继；AEAD 传输+断点续传+sha256 校验 | ✅ v0.3（`p2pc` 参考客户端，六平台二进制随 Release 发布） |
-| 安全加固 | wire AEAD 跨方向 nonce 重用修复、注册 token 恒时比较、注册中心容量治理、中继每 IP 限流、信令会话存活检查、HKDF 密钥派生 | ✅ v0.4 |
+| 安全加固 | wire AEAD 跨方向 nonce 重用修复（方向标签分离 nonce 空间）、注册 token 恒时比较、注册中心容量治理（全局节点/公告上限）、中继每 IP 限流、信令会话存活检查、HKDF 密钥派生 | ✅ v0.4 |
+| **传输协议 v2（破坏性）** | v0.4 起 wire 帧 nonce 空间与密钥派生（HKDF）整体轮换，**与 v0.3.x 及更早版本互不兼容**——双端（p2pc/desktop）须同版升级，旧版互传首帧直接失败 | ✅ v0.4 |
 
 非目标：内容 DHT 去中心化、离线传输、文件中转存储。
 
@@ -48,6 +49,17 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 
 流程：节点注册+口令公告 → WS 信令配对（接收方与 resolve 源身份交叉核对）→ PAKE（口令派生会话密钥）→ 候选地址交换（PAKE 派生密钥加密）→ **UDP 同时开洞**（反射器提供公网映射；成功走 QUIC 指纹钉定 mTLS 直连）→ 失败回落**加密中继**（12347，令牌配对+限速）→ AEAD 消息传输（meta/ready/chunk/final，断点续传）→ sha256 全量校验。服务端全程只见密文。
 
+### 网页模式（p2pc-web）
+
+面向无 webkit2gtk-4.1 的老底座桌面（统信 UOS V20 全系 / 银河麒麟 V10 SP1 等）的浏览器版客户端：单个纯静态二进制，本机起回环 HTTP 服务，浏览器即界面——文件柜快捷入口 + 设备直传收发（内置 p2p，与 p2pc 同协议，双端须同为协议 v2）。
+
+```bash
+./p2pc-web-x86_64-unknown-linux-gnu                       # 默认 127.0.0.1:12348,自动开浏览器
+./p2pc-web-x86_64-unknown-linux-gnu --out ~/下载 --no-open # 另有 --addr --max-upload
+```
+
+安全：启动生成随机令牌（进入须用启动打印的完整地址），回环部署校验 Host 头防 DNS rebinding；上传流式落临时目录（保留原始文件名给对端），传输完即清理。六平台二进制随 Release 发布（资产名 `p2pc-web-<triple>`）。
+
 ## 配置
 
 优先级：`FCB_P2P_*` 环境变量 > 配置文件（`--config` / `CONFIG_PATH`）> 内置默认。完整样例见 [configs/config.yaml](./configs/config.yaml)。
@@ -61,6 +73,8 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 | `FCB_P2P_ADMIN_PASSWORD` | — | 留空 = 管理 API 整体禁用；生产必须注入 |
 | `FCB_P2P_ANNOUNCE_MAX_PER_NODE` | `1000` | 单节点公告配额 |
 | `FCB_P2P_ANNOUNCE_MAX_TTL` | `168h` | 公告最大存活 |
+| `FCB_P2P_REGISTRATION_MAX_NODES` | `5000` | 全局节点租约上限（内存耗尽防护；0=默认值） |
+| `FCB_P2P_ANNOUNCE_MAX_TOTAL` | `50000` | 全局公告上限（0=默认值） |
 | `FCB_P2P_SIGNALING_ENABLED` | `true` | 信令信道开关（关闭仅影响直传配对） |
 | `FCB_P2P_SIGNALING_SESSION_TTL` | `10m` | 信令会话最长生命周期 |
 | `FCB_P2P_SIGNALING_IDLE_TIMEOUT` | `2m` | 连接空闲上限 |
