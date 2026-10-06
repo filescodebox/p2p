@@ -48,6 +48,10 @@ func TestMain(m *testing.M) {
 				o.path = strings.TrimPrefix(b, "--path=")
 			case strings.HasPrefix(b, "--out="):
 				o.outDir = strings.TrimPrefix(b, "--out=")
+			case strings.HasPrefix(b, "--relay="):
+				o.relay = strings.TrimPrefix(b, "--relay=")
+			case b == "--no-punch":
+				o.noPunch = true
 			}
 		}
 		os.Exit(runTransferChild(o))
@@ -138,8 +142,12 @@ func TestWebSendToClientRecv(t *testing.T) {
 		loopback:  true,
 		maxUpload: 1 << 20,
 		outDir:    t.TempDir(),
-		cfg:       newCfgStoreAt(filepath.Join(t.TempDir(), "c.json")),
-		mgr:       NewManager(),
+		// 确定性走 fixture 中继(禁打洞):CI runner 上 loopback UDP 打洞不可靠,
+		// 且与 internal/client 的打洞用例并行时互相争抢资源——同 TestSendRecvForcedRelay 模式
+		relay:   f.relay,
+		noPunch: true,
+		cfg:     newCfgStoreAt(filepath.Join(t.TempDir(), "c.json")),
+		mgr:     NewManager(),
 	}
 	ts := httptest.NewServer(s.routes())
 	defer ts.Close()

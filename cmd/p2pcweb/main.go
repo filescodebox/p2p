@@ -32,6 +32,8 @@ type options struct {
 	outDir    string
 	maxUpload int64
 	noOpen    bool
+	relay     string
+	noPunch   bool
 	// 传输子模式专用
 	child    string
 	registry string
@@ -54,6 +56,8 @@ func main() {
 	fs.StringVar(&o.outDir, "out", "", "接收目录（缺省: XDG 下载目录 > ~/Downloads > 当前目录）")
 	fs.Int64Var(&o.maxUpload, "max-upload", 4<<30, "网页上传单文件上限（字节）")
 	fs.BoolVar(&o.noOpen, "no-open", false, "不自动打开浏览器")
+	fs.StringVar(&o.relay, "relay", "", "中继地址（缺省按注册中心 host 推导 :12347）")
+	fs.BoolVar(&o.noPunch, "no-punch", false, "跳过 UDP 打洞直接走中继")
 	fs.StringVar(&o.child, "transfer-child", "", "内部用:传输子模式(send|recv)，勿手动调用")
 	fs.StringVar(&o.registry, "registry", "", "传输子模式:p2pd 基址")
 	fs.StringVar(&o.path, "path", "", "传输子模式:发送文件路径")
@@ -97,6 +101,8 @@ func runServer(o *options) error {
 		port:      port,
 		maxUpload: o.maxUpload,
 		outDir:    resolveDownloadDir(o.outDir),
+		relay:     o.relay,
+		noPunch:   o.noPunch,
 		cfg:       newCfgStore(),
 		mgr:       NewManager(),
 	}

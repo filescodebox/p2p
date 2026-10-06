@@ -35,6 +35,8 @@ type Server struct {
 	port      string
 	maxUpload int64
 	outDir    string
+	relay     string // 透传子模式的中继地址（空=按注册中心 host 推导；测试注入用）
+	noPunch   bool   // 透传子模式禁用打洞（默认 false；测试确定性用）
 	cfg       *cfgStore
 	mgr       *Manager
 }
@@ -243,7 +245,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cleanup := func() { _ = os.RemoveAll(tmpDir) }
-	if err := s.mgr.Start("send", registry, code, dest, "", cleanup); err != nil {
+	if err := s.mgr.Start("send", registry, code, dest, "", s.relay, s.noPunch, cleanup); err != nil {
 		cleanup()
 		writeErr(w, http.StatusConflict, err.Error())
 		return
@@ -270,7 +272,7 @@ func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.cfg.set(Config{ServerURL: s.cfg.get().ServerURL, Registry: registry})
-	if err := s.mgr.Start("recv", registry, code, "", s.outDir, nil); err != nil {
+	if err := s.mgr.Start("recv", registry, code, "", s.outDir, s.relay, s.noPunch, nil); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}

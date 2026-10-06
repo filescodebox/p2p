@@ -86,7 +86,8 @@ func (m *Manager) broadcast(ev Event) {
 }
 
 // Start 拉起传输子进程。kind=send|recv；cleanup 在进程退出后执行（临时文件清理）。
-func (m *Manager) Start(kind, registry, code, path, outDir string, cleanup func()) error {
+// relay 非空/禁打洞透传子模式（服务端默认推导中继；测试注入 fixture 中继保确定性）。
+func (m *Manager) Start(kind, registry, code, path, outDir, relay string, noPunch bool, cleanup func()) error {
 	m.mu.Lock()
 	if m.running {
 		m.mu.Unlock()
@@ -103,6 +104,12 @@ func (m *Manager) Start(kind, registry, code, path, outDir string, cleanup func(
 		args = append(args, "--path="+path)
 	} else {
 		args = append(args, "--out="+outDir)
+	}
+	if relay != "" {
+		args = append(args, "--relay="+relay)
+	}
+	if noPunch {
+		args = append(args, "--no-punch")
 	}
 	cmd := exec.Command(self, args...)
 	stdout, err := cmd.StdoutPipe()
@@ -186,7 +193,7 @@ func (m *Manager) wait() {
 func runTransferChild(o *options) int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout,
 		&slog.HandlerOptions{Level: slog.LevelInfo})))
-	c, err := client.New(client.Options{Registry: o.registry})
+	c, err := client.New(client.Options{Registry: o.registry, RelayAddr: o.relay, DisablePunch: o.noPunch})
 	if err != nil {
 		return childFail(err)
 	}
