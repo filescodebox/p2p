@@ -1,9 +1,9 @@
-module github.com/filescodebox/p2p
+module github.com/pigeonbox/p2p
 
 go 1.26.5
 
 require (
-	github.com/filescodebox/kit v0.3.0
+	github.com/pigeonbox/kit v0.3.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.24.1
 	github.com/quic-go/quic-go v0.63.0

@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/p2p/internal/config"
-	reflectPkg "github.com/filescodebox/p2p/internal/reflect"
-	"github.com/filescodebox/p2p/internal/registry"
-	"github.com/filescodebox/p2p/internal/relay"
-	"github.com/filescodebox/p2p/internal/server"
-	"github.com/filescodebox/p2p/internal/store/memory"
+	"github.com/pigeonbox/p2p/internal/config"
+	reflectPkg "github.com/pigeonbox/p2p/internal/reflect"
+	"github.com/pigeonbox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/relay"
+	"github.com/pigeonbox/p2p/internal/server"
+	"github.com/pigeonbox/p2p/internal/store/memory"
 )
 
 // ---- fixture: 完整 p2pd 能力(注册/公告/解析/信令/反射器/可选中继) ----

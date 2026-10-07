@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/p2p/internal/wire"
+	"github.com/pigeonbox/p2p/internal/wire"
 )
 
 // Options 客户端参数。

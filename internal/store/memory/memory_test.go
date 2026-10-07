@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/p2p/internal/store"
+	"github.com/pigeonbox/p2p/internal/store"
 )
 
 func TestNodeCRUD(t *testing.T) {

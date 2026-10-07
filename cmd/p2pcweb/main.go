@@ -1,4 +1,4 @@
-// p2pc-web — FilesCodeBox 设备直传·网页模式客户端。
+// p2pc-web — PigeonBox 设备直传·网页模式客户端。
 //
 // 面向无 webkit2gtk-4.1 的老底座桌面（统信 UOS V20 全系/银河麒麟 V10 SP1 等，
 // glibc 2.28 一档）：单个静态二进制（零 GUI/零系统 webview 依赖），本机起
@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/filescodebox/kit/version"
+	"github.com/pigeonbox/kit/version"
 )
 
 // options 全部旗标（服务模式与传输子模式共用一套）。
@@ -111,7 +111,7 @@ func runServer(o *options) error {
 	}
 
 	url := fmt.Sprintf("http://%s/?t=%s", net.JoinHostPort(displayHost(host), port), token)
-	logf("FilesCodeBox 直传·网页模式 %s\n  界面:     %s\n  接收目录: %s\n  退出:     Ctrl+C（或关闭终端）",
+	logf("PigeonBox 直传·网页模式 %s\n  界面:     %s\n  接收目录: %s\n  退出:     Ctrl+C（或关闭终端）",
 		version.Version, url, s.outDir)
 	if !o.noOpen {
 		go openBrowser(url)
@@ -161,7 +161,7 @@ func logf(format string, a ...any) {
 }
 
 func usage() {
-	fmt.Print(`p2pc-web — FilesCodeBox 设备直传·网页模式客户端
+	fmt.Print(`p2pc-web — PigeonBox 设备直传·网页模式客户端
 
 用法:
   p2pc-web [--addr 127.0.0.1:12348] [--out 目录] [--max-upload 字节] [--no-open]

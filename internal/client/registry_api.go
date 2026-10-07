@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/filescodebox/kit/version"
-	"github.com/filescodebox/p2p/internal/registry"
+	"github.com/pigeonbox/kit/version"
+	"github.com/pigeonbox/p2p/internal/registry"
 )
 
 // registryAPI 节点身份生命周期：注册→公告→解析→注销。

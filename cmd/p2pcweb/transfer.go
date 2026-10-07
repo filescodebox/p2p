@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/filescodebox/p2p/internal/client"
+	"github.com/pigeonbox/p2p/internal/client"
 )
 
 // ErrBusy 已有传输进行中。

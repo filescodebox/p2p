@@ -1,13 +1,13 @@
-# FilesCodeBox P2P
+# PigeonBox P2P
 
-[![CI](https://github.com/filescodebox/p2p/actions/workflows/ci.yml/badge.svg)](https://github.com/filescodebox/p2p/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/tag/filescodebox/p2p?label=release)](https://github.com/filescodebox/p2p/releases)
+[![CI](https://github.com/pigeonbox/p2p/actions/workflows/ci.yml/badge.svg)](https://github.com/pigeonbox/p2p/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/pigeonbox/p2p?label=release)](https://github.com/pigeonbox/p2p/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
-FilesCodeBox 生态的 **P2P 联邦注册中心**：让任意多个 FilesCodeBox 节点（server / fnos / desktop）互相发现，口令分享跨站可达——文件始终从源节点直出，注册中心不落盘、不见明文。
+PigeonBox 生态的 **P2P 联邦注册中心**：让任意多个 PigeonBox 节点（server / fnos / desktop）互相发现，口令分享跨站可达——文件始终从源节点直出，注册中心不落盘、不见明文。
 
-**The federated registry for FilesCodeBox**: nodes register, passcodes resolve across sites, files flow directly from the source node — the registry stores no files and never sees plaintext passcodes.
+**The federated registry for PigeonBox**: nodes register, passcodes resolve across sites, files flow directly from the source node — the registry stores no files and never sees plaintext passcodes.
 
 ## 它解决什么
 
@@ -27,7 +27,7 @@ FilesCodeBox 生态的 **P2P 联邦注册中心**：让任意多个 FilesCodeBox
 ```bash
 docker run -d --name fcb-p2p -p 12346:12346 \
   -e FCB_P2P_ADMIN_PASSWORD=$(openssl rand -hex 16) \
-  ghcr.io/filescodebox/p2p:latest
+  ghcr.io/pigeonbox/p2p:latest
 ```
 
 源码构建：
@@ -159,14 +159,14 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 
 | 仓库 | 角色 |
 |---|---|
-| [filescodebox](https://github.com/filescodebox/filescodebox) | 装配 hub：go.work + 文档 + 部署清单 |
-| [contracts](https://github.com/filescodebox/contracts) · [core](https://github.com/filescodebox/core) | 契约层 · 业务核心库（`federation` 域服务对接本服务） |
-| [server](https://github.com/filescodebox/server) · [frontend](https://github.com/filescodebox/frontend) | 独立部署壳 · Web 前端 |
-| [fnos](https://github.com/filescodebox/fnos) · [desktop](https://github.com/filescodebox/desktop) | 飞牛 fnOS 适配 · 桌面客户端（M3 直传对等端） |
-| [charts](https://github.com/filescodebox/charts) | Kubernetes Helm Chart |
+| [pigeonbox](https://github.com/pigeonbox/pigeonbox) | 装配 hub：go.work + 文档 + 部署清单 |
+| [contracts](https://github.com/pigeonbox/contracts) · [core](https://github.com/pigeonbox/core) | 契约层 · 业务核心库（`federation` 域服务对接本服务） |
+| [server](https://github.com/pigeonbox/server) · [frontend](https://github.com/pigeonbox/frontend) | 独立部署壳 · Web 前端 |
+| [fnos](https://github.com/pigeonbox/fnos) · [desktop](https://github.com/pigeonbox/desktop) | 飞牛 fnOS 适配 · 桌面客户端（M3 直传对等端） |
+| [charts](https://github.com/pigeonbox/charts) | Kubernetes Helm Chart |
 
-依赖方向：`server / fnos / frontend → core → contracts`；p2p 为叶子仓，业务链零生态依赖（stdlib net/http，无 Hertz，CI 守卫强制），不在依赖链上。唯一允许的地基层依赖是 [kit](https://github.com/filescodebox/kit)（共享工具库，本身零生态依赖，依赖方向恒为 p2p → kit 单向无环；2026-10-05 起按键限流器采用 kit/ratelimit）。
+依赖方向：`server / fnos / frontend → core → contracts`；p2p 为叶子仓，业务链零生态依赖（stdlib net/http，无 Hertz，CI 守卫强制），不在依赖链上。唯一允许的地基层依赖是 [kit](https://github.com/pigeonbox/kit)（共享工具库，本身零生态依赖，依赖方向恒为 p2p → kit 单向无环；2026-10-05 起按键限流器采用 kit/ratelimit）。
 
 ## License
 
-[Apache-2.0](./LICENSE) — `Copyright 2026 FilesCodeBox`。本项目为独立实现，未移植 vastsa/FileCodeBox（LGPL-3.0）或 schollz/croc（MIT，仅以依赖方式参考其 PAKE 思路）的源码。
+[Apache-2.0](./LICENSE) — `Copyright 2026 PigeonBox`。本项目为独立实现，未移植 vastsa/PigeonBox（LGPL-3.0）或 schollz/croc（MIT，仅以依赖方式参考其 PAKE 思路）的源码。

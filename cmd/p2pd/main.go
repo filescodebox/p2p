@@ -1,4 +1,4 @@
-// p2pd — FilesCodeBox P2P 联邦注册中心。
+// p2pd — PigeonBox P2P 联邦注册中心。
 //
 // 单进程单二进制:节点租约注册/心跳、口令公告路由(SHA-256 哈希,不接触明文)、
 // 管理端与 Prometheus 指标。M3 起追加 WS 信令与加密中继。
@@ -17,15 +17,15 @@ import (
 	"syscall"
 	"time"
 
-	reflectPkg "github.com/filescodebox/p2p/internal/reflect"
-	relayPkg "github.com/filescodebox/p2p/internal/relay"
+	reflectPkg "github.com/pigeonbox/p2p/internal/reflect"
+	relayPkg "github.com/pigeonbox/p2p/internal/relay"
 
-	"github.com/filescodebox/kit/shutdown"
-	"github.com/filescodebox/kit/version"
-	"github.com/filescodebox/p2p/internal/config"
-	"github.com/filescodebox/p2p/internal/registry"
-	"github.com/filescodebox/p2p/internal/server"
-	"github.com/filescodebox/p2p/internal/store/memory"
+	"github.com/pigeonbox/kit/shutdown"
+	"github.com/pigeonbox/kit/version"
+	"github.com/pigeonbox/p2p/internal/config"
+	"github.com/pigeonbox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/server"
+	"github.com/pigeonbox/p2p/internal/store/memory"
 )
 
 const sweepInterval = 30 * time.Second

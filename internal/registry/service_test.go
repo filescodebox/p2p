@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/p2p/internal/store/memory"
+	"github.com/pigeonbox/p2p/internal/store/memory"
 )
 
 // ---- 测试脚手架 ----

@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 
-	"github.com/filescodebox/p2p/internal/reflect"
+	"github.com/pigeonbox/p2p/internal/reflect"
 )
 
 // ---- 候选交换与 UDP 同时开洞 ----

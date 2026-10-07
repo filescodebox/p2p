@@ -21,7 +21,7 @@ import (
 	"github.com/quic-go/quic-go/qlog"
 	"github.com/quic-go/quic-go/qlogwriter"
 
-	"github.com/filescodebox/p2p/internal/wire"
+	"github.com/pigeonbox/p2p/internal/wire"
 )
 
 // ---- 传输建立：打洞成功走 QUIC(打洞套接字),失败走中继 TCP ----

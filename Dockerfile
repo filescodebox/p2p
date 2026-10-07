@@ -1,4 +1,4 @@
-# FilesCodeBox P2P 注册中心镜像(纯 Go 静态构建,天然多架构)。
+# PigeonBox P2P 注册中心镜像(纯 Go 静态构建,天然多架构)。
 #
 # 构建上下文为本仓库即可,零生态依赖(不 import core/contracts)。
 #   cd p2p && docker build -t p2p:latest .
@@ -27,15 +27,15 @@ ARG BUILD_TIME=unknown
 # 纯静态(CGO_ENABLED=0):无 sqlite 等本地依赖;p2pc=直传客户端随镜像分发
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags="-w -s \
-    -X 'github.com/filescodebox/kit/version.Version=${VERSION}' \
-    -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' \
-    -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'" \
+    -X 'github.com/pigeonbox/kit/version.Version=${VERSION}' \
+    -X 'github.com/pigeonbox/kit/version.BuildCommit=${COMMIT}' \
+    -X 'github.com/pigeonbox/kit/version.BuildTime=${BUILD_TIME}'" \
     -o /out/p2pd ./cmd/p2pd && \
     CGO_ENABLED=0 go build -trimpath \
     -ldflags="-w -s \
-    -X 'github.com/filescodebox/kit/version.Version=${VERSION}' \
-    -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' \
-    -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'" \
+    -X 'github.com/pigeonbox/kit/version.Version=${VERSION}' \
+    -X 'github.com/pigeonbox/kit/version.BuildCommit=${COMMIT}' \
+    -X 'github.com/pigeonbox/kit/version.BuildTime=${BUILD_TIME}'" \
     -o /out/p2pc ./cmd/p2pc
 
 # ========== Stage 2: 运行时镜像 ==========

@@ -23,7 +23,7 @@ func configPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "filescodebox", "p2pcweb.json"), nil
+	return filepath.Join(base, "pigeonbox", "p2pcweb.json"), nil
 }
 
 // cfgStore 带锁的配置存取（HTTP 并发写安全）。

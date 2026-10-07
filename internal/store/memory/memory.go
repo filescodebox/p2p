@@ -6,7 +6,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/filescodebox/p2p/internal/store"
+	"github.com/pigeonbox/p2p/internal/store"
 )
 
 // Store 内存存储。

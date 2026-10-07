@@ -22,9 +22,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/filescodebox/p2p/internal/client"
-	"github.com/filescodebox/p2p/internal/registry"
-	"github.com/filescodebox/p2p/internal/signaling"
+	"github.com/pigeonbox/p2p/internal/client"
+	"github.com/pigeonbox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/signaling"
 )
 
 func main() {

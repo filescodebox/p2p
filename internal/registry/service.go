@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/p2p/internal/store"
+	"github.com/pigeonbox/p2p/internal/store"
 )
 
 // 哨兵错误:server 层按 errors.Is 映射 HTTP 状态码。

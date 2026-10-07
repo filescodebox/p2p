@@ -16,8 +16,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/filescodebox/p2p/internal/registry"
-	"github.com/filescodebox/p2p/internal/store/memory"
+	"github.com/pigeonbox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/store/memory"
 )
 
 // ---- 脚手架 ----

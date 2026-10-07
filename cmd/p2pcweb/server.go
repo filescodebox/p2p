@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/kit/version"
-	"github.com/filescodebox/p2p/internal/client"
+	"github.com/pigeonbox/kit/version"
+	"github.com/pigeonbox/p2p/internal/client"
 )
 
 //go:embed web/index.html

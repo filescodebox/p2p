@@ -1,5 +1,5 @@
 name: Release
-# 打 v* tag → ① 多架构镜像推 ghcr.io/filescodebox/p2p(amd64+arm64);
+# 打 v* tag → ① 多架构镜像推 ghcr.io/pigeonbox/p2p(amd64+arm64);
 # ② p2pc 直传客户端六平台二进制挂本仓 Release 并回挂 hub(桌面端 sidecar/终端用户分发)。
 # 注意:新镜像包默认 private,首个 release 后需在 GitHub Packages 页手动 flip public
 # (fnos 踩过的坑)。provenance=false:buildx 默认认证清单会使 GitHub Packages 页
@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/filescodebox/p2p
+  IMAGE: ghcr.io/pigeonbox/p2p
 
 jobs:
   release:
@@ -69,7 +69,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          LDFLAGS="-w -s -X 'github.com/filescodebox/kit/version.Version=${VERSION}' -X 'github.com/filescodebox/kit/version.BuildCommit=${COMMIT}' -X 'github.com/filescodebox/kit/version.BuildTime=${BUILD_TIME}'"
+          LDFLAGS="-w -s -X 'github.com/pigeonbox/kit/version.Version=${VERSION}' -X 'github.com/pigeonbox/kit/version.BuildCommit=${COMMIT}' -X 'github.com/pigeonbox/kit/version.BuildTime=${BUILD_TIME}'"
           mkdir -p out
           build() { GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o "out/$3" ./cmd/$4; }
           build linux   amd64 p2pc-x86_64-unknown-linux-gnu        p2pc
@@ -92,7 +92,7 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY" --clobber || {
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "p2p $GITHUB_REF_NAME" \
-              --notes "联邦注册中心(p2pd)+设备直传客户端(p2pc / p2pc-web 网页模式)。镜像见 ghcr.io/filescodebox/p2p" \
+              --notes "联邦注册中心(p2pd)+设备直传客户端(p2pc / p2pc-web 网页模式)。镜像见 ghcr.io/pigeonbox/p2p" \
               && gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY";
           }
 
@@ -109,19 +109,19 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           sleep 10
-          NOTES=$(printf '%s\n\n---\n🗂 **组件仓库**: [filescodebox/p2p](https://github.com/filescodebox/p2p) · **完整变更日志**: [%s](https://github.com/filescodebox/p2p/releases/tag/%s)\n🌐 **生态总览 / Latest**: [filescodebox/filescodebox](https://github.com/filescodebox/filescodebox/releases/latest)\n' \
-            "P2P 联邦:注册中心镜像(ghcr.io/filescodebox/p2p)与设备直传客户端 p2pc / p2pc-web 网页模式(见 Assets,文件名含目标平台 triple)。" "${TAG}" "${TAG}")
-          gh release view "p2p-$TAG" --repo filescodebox/filescodebox >/dev/null 2>&1 || \
-            gh release create "p2p-$TAG" --repo filescodebox/filescodebox \
-              --title "FilesCodeBox P2P $TAG" \
+          NOTES=$(printf '%s\n\n---\n🗂 **组件仓库**: [pigeonbox/p2p](https://github.com/pigeonbox/p2p) · **完整变更日志**: [%s](https://github.com/pigeonbox/p2p/releases/tag/%s)\n🌐 **生态总览 / Latest**: [pigeonbox/pigeonbox](https://github.com/pigeonbox/pigeonbox/releases/latest)\n' \
+            "P2P 联邦:注册中心镜像(ghcr.io/pigeonbox/p2p)与设备直传客户端 p2pc / p2pc-web 网页模式(见 Assets,文件名含目标平台 triple)。" "${TAG}" "${TAG}")
+          gh release view "p2p-$TAG" --repo pigeonbox/pigeonbox >/dev/null 2>&1 || \
+            gh release create "p2p-$TAG" --repo pigeonbox/pigeonbox \
+              --title "PigeonBox P2P $TAG" \
               --latest=false \
               --notes "${NOTES}"
           mkdir -p /tmp/p2pc
-          gh release download "$TAG" --repo filescodebox/p2p --dir /tmp/p2pc --clobber || true
+          gh release download "$TAG" --repo pigeonbox/p2p --dir /tmp/p2pc --clobber || true
           shopt -s nullglob
           for f in /tmp/p2pc/p2pc-*; do
-            gh release upload "p2p-$TAG" "$f" --repo filescodebox/filescodebox --clobber || true
+            gh release upload "p2p-$TAG" "$f" --repo pigeonbox/pigeonbox --clobber || true
           done
           # 组件回挂恒不为 Latest(Latest 属于 hub 生态快照 v*);release 已存在时也兜底纠偏
-          gh release edit "p2p-$TAG" --repo filescodebox/filescodebox --latest=false || true
-          echo "已回挂到 filescodebox/filescodebox Releases"
+          gh release edit "p2p-$TAG" --repo pigeonbox/pigeonbox --latest=false || true
+          echo "已回挂到 pigeonbox/pigeonbox Releases"

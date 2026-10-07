@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/kit/ratelimit"
-	"github.com/filescodebox/p2p/internal/config"
-	"github.com/filescodebox/p2p/internal/registry"
-	"github.com/filescodebox/p2p/internal/signaling"
+	"github.com/pigeonbox/kit/ratelimit"
+	"github.com/pigeonbox/p2p/internal/config"
+	"github.com/pigeonbox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/signaling"
 	"golang.org/x/time/rate"
 )
 

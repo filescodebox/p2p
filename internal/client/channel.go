@@ -7,8 +7,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/filescodebox/p2p/internal/registry"
-	"github.com/filescodebox/p2p/internal/signaling"
+	"github.com/pigeonbox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/signaling"
 )
 
 // channel 信令信道客户端侧：接入→hello→等待配对→之后以 data 帧收发。

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/p2p/internal/store"
-	"github.com/filescodebox/p2p/internal/store/memory"
+	"github.com/pigeonbox/p2p/internal/store"
+	"github.com/pigeonbox/p2p/internal/store/memory"
 )
 
 // ---- 压测基准(M4): 注册/公告/解析热路径(含 Ed25519 验签与内存读写) ----

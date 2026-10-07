@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/filescodebox/p2p/internal/wire"
+	"github.com/pigeonbox/p2p/internal/wire"
 )
 
 // ---- 文件传输协议（wire 消息: meta → ready → chunk* → final）----

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/kit/ratelimit"
+	"github.com/pigeonbox/kit/ratelimit"
 )
 
 const (

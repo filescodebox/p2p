@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/filescodebox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/registry"
 )
 
 // ---- 线上契约（与 README "信令信道协议"逐字对齐，改动须双侧同步） ----

@@ -18,7 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/filescodebox/p2p/internal/registry"
+	"github.com/pigeonbox/p2p/internal/registry"
 )
 
 // Config 信令信道参数。
