@@ -32,11 +32,16 @@ type Options struct {
 
 // DefaultNodeKeyPath 默认密钥位置（用户缓存目录）。
 func DefaultNodeKeyPath() string {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "fcb-p2p-node.key"
+	if base, err := os.UserCacheDir(); err == nil {
+		dir := filepath.Join(base, "fcb-p2p")
+		// 预建目录:NAS/容器场景 HOME 常指向不存在或不可写的路径
+		// (/home/zhangyi 不存在),此处探明可写性,失败回退临时目录。
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			return filepath.Join(dir, "node.key")
+		}
 	}
-	return filepath.Join(base, "fcb-p2p", "node.key")
+	// 无 HOME/HOME 不可写:回退系统临时目录(密钥随容器生命周期,可接受)
+	return filepath.Join(os.TempDir(), "fcb-p2p-node.key")
 }
 
 // Client 直传客户端。
