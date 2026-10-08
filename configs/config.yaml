@@ -1,7 +1,7 @@
 # PigeonBox P2P 注册中心配置样例。
 # 所有键均有内置默认,本文件可整体省略。
-# 环境变量覆盖(优先级最高): 键中 . 换 _ 加前缀,如 server.port → FCB_P2P_SERVER_PORT。
-# 敏感项一律环境变量注入: FCB_P2P_ADMIN_PASSWORD、FCB_P2P_REGISTRATION_TOKEN。
+# 环境变量覆盖(优先级最高): 键中 . 换 _ 加前缀,如 server.port → PB_P2P_SERVER_PORT。
+# 敏感项一律环境变量注入: PB_P2P_ADMIN_PASSWORD、PB_P2P_REGISTRATION_TOKEN。
 
 server:
   port: 12346

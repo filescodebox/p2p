@@ -96,7 +96,7 @@ func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peer
 		HandshakeIdleTimeout: 10 * time.Second,
 		KeepAlivePeriod:      15 * time.Second,
 	}
-	if qlogDir := os.Getenv("FCB_P2P_QLOG"); qlogDir != "" {
+	if qlogDir := os.Getenv("PB_P2P_QLOG"); qlogDir != "" {
 		_ = os.MkdirAll(qlogDir, 0o755)
 		role := "server"
 		if !isSender {

@@ -103,7 +103,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /health", s.handleHealth)
 	// /metrics 门禁(2026-10-05 审计 P3):配置了管理口令时同 adminGate 校验
-	// (Prometheus 抓取侧配 Authorization: Bearer <FCB_P2P_ADMIN_PASSWORD>);
+	// (Prometheus 抓取侧配 Authorization: Bearer <PB_P2P_ADMIN_PASSWORD>);
 	// 未配置口令保持开放(默认部署兼容,文档声明)。
 	if s.cfg.Admin.Password != "" {
 		mux.Handle("GET /metrics", s.adminGate(promHandler(s.metrics.reg).ServeHTTP))
@@ -230,7 +230,7 @@ func (s *Server) adminGate(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		pw := s.cfg.Admin.Password
 		if pw == "" {
-			writeErr(w, http.StatusForbidden, errors.New("admin 未启用(未配置 FCB_P2P_ADMIN_PASSWORD)"))
+			writeErr(w, http.StatusForbidden, errors.New("admin 未启用(未配置 PB_P2P_ADMIN_PASSWORD)"))
 			return
 		}
 		auth := r.Header.Get("Authorization")

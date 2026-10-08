@@ -1,6 +1,6 @@
 // Package config 加载 p2pd 配置。
 //
-// 优先级(高→低): FCB_P2P_* 环境变量 > 配置文件(--config / CONFIG_PATH) > 内置默认。
+// 优先级(高→低): PB_P2P_* 环境变量 > 配置文件(--config / CONFIG_PATH) > 内置默认。
 // 所有键均有默认值,配置文件可省略。
 package config
 
@@ -27,36 +27,36 @@ type Config struct {
 // Relay 加密中继配置（M3 打洞失败的兜底;默认整机关闭）。
 type Relay struct {
 	// Enabled 总开关（默认 false——不存在可被滥用的开放代理）。
-	// env: FCB_P2P_RELAY_ENABLED
+	// env: PB_P2P_RELAY_ENABLED
 	Enabled bool
-	// Port 中继 TCP 端口。env: FCB_P2P_RELAY_PORT
+	// Port 中继 TCP 端口。env: PB_P2P_RELAY_PORT
 	Port int
-	// MbpsPerChannel 单信道带宽上限（Mbps,0=不限）。env: FCB_P2P_RELAY_MBPS
+	// MbpsPerChannel 单信道带宽上限（Mbps,0=不限）。env: PB_P2P_RELAY_MBPS
 	MbpsPerChannel int64
 }
 
 // Reflector UDP 地址反射器（打洞前提;与 HTTP 同端口,默认开）。
 type Reflector struct {
-	// Enabled 总开关。env: FCB_P2P_REFLECTOR_ENABLED
+	// Enabled 总开关。env: PB_P2P_REFLECTOR_ENABLED
 	Enabled bool
 }
 
 // Signaling WS 信令信道配置（M3 设备直传；默认开——准入由节点签名把守，
 // 关闭只影响直传配对，不影响注册/公告/解析）。
 type Signaling struct {
-	// Enabled 总开关。env: FCB_P2P_SIGNALING_ENABLED
+	// Enabled 总开关。env: PB_P2P_SIGNALING_ENABLED
 	Enabled bool
-	// SessionTTL 会话最长生命周期（含等待配对）。env: FCB_P2P_SIGNALING_SESSION_TTL
+	// SessionTTL 会话最长生命周期（含等待配对）。env: PB_P2P_SIGNALING_SESSION_TTL
 	SessionTTL time.Duration
-	// IdleTimeout 连接空闲上限（pong 与数据帧均续期）。env: FCB_P2P_SIGNALING_IDLE_TIMEOUT
+	// IdleTimeout 连接空闲上限（pong 与数据帧均续期）。env: PB_P2P_SIGNALING_IDLE_TIMEOUT
 	IdleTimeout time.Duration
-	// HelloTimeout 接入后交 hello 的时限。env: FCB_P2P_SIGNALING_HELLO_TIMEOUT
+	// HelloTimeout 接入后交 hello 的时限。env: PB_P2P_SIGNALING_HELLO_TIMEOUT
 	HelloTimeout time.Duration
-	// MaxFrameBytes data 帧负载上限（字节）。env: FCB_P2P_SIGNALING_MAX_FRAME_BYTES
+	// MaxFrameBytes data 帧负载上限（字节）。env: PB_P2P_SIGNALING_MAX_FRAME_BYTES
 	MaxFrameBytes int
-	// MaxSessionsPerNode 单节点并发会话上限。env: FCB_P2P_SIGNALING_MAX_PER_NODE
+	// MaxSessionsPerNode 单节点并发会话上限。env: PB_P2P_SIGNALING_MAX_PER_NODE
 	MaxSessionsPerNode int
-	// MaxTotalSessions 全局并发会话上限。env: FCB_P2P_SIGNALING_MAX_TOTAL
+	// MaxTotalSessions 全局并发会话上限。env: PB_P2P_SIGNALING_MAX_TOTAL
 	MaxTotalSessions int
 }
 
@@ -92,7 +92,7 @@ type Announce struct {
 }
 
 // Admin 管理端点。Password 为空时管理 API 整体禁用(403)。
-// 推荐仅经环境变量 FCB_P2P_ADMIN_PASSWORD 注入,不落配置文件。
+// 推荐仅经环境变量 PB_P2P_ADMIN_PASSWORD 注入,不落配置文件。
 type Admin struct {
 	Password string
 }
@@ -138,9 +138,9 @@ func setDefaults(v *viper.Viper) {
 // Load 读取配置。path 为空时仅用默认值+环境变量。
 func Load(path string) (*Config, error) {
 	v := viper.New()
-	v.SetEnvPrefix("FCB_P2P")
+	v.SetEnvPrefix("PB_P2P")
 	v.AutomaticEnv()
-	// server.port → FCB_P2P_SERVER_PORT
+	// server.port → PB_P2P_SERVER_PORT
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	setDefaults(v)
 
@@ -211,7 +211,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("registration.mode 仅支持 open|token,当前: %q", c.Registration.Mode)
 	}
 	if c.Registration.Mode == "token" && c.Registration.Token == "" {
-		return fmt.Errorf("registration.mode=token 时必须设置 registration.token(或 FCB_P2P_REGISTRATION_TOKEN)")
+		return fmt.Errorf("registration.mode=token 时必须设置 registration.token(或 PB_P2P_REGISTRATION_TOKEN)")
 	}
 	if c.Registration.MinNodeTTL <= 0 || c.Registration.MaxNodeTTL < c.Registration.MinNodeTTL {
 		return fmt.Errorf("node TTL 区间非法: min=%s max=%s", c.Registration.MinNodeTTL, c.Registration.MaxNodeTTL)

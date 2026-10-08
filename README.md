@@ -26,7 +26,7 @@ PigeonBox 生态的 **P2P 联邦注册中心**：让任意多个 PigeonBox 节�
 
 ```bash
 docker run -d --name fcb-p2p -p 12346:12346 \
-  -e FCB_P2P_ADMIN_PASSWORD=$(openssl rand -hex 16) \
+  -e PB_P2P_ADMIN_PASSWORD=$(openssl rand -hex 16) \
   ghcr.io/pigeonbox/p2p:latest
 ```
 
@@ -62,28 +62,28 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 
 ## 配置
 
-优先级：`FCB_P2P_*` 环境变量 > 配置文件（`--config` / `CONFIG_PATH`）> 内置默认。完整样例见 [configs/config.yaml](./configs/config.yaml)。
+优先级：`PB_P2P_*` 环境变量 > 配置文件（`--config` / `CONFIG_PATH`）> 内置默认。完整样例见 [configs/config.yaml](./configs/config.yaml)。
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `FCB_P2P_SERVER_PORT` | `12346` | HTTP/信令端口 |
-| `FCB_P2P_SERVER_BEHIND_PROXY` | `false` | 反代部署置 true（取 X-Forwarded-For 参与限流） |
-| `FCB_P2P_REGISTRATION_MODE` | `open` | `open` 开放注册 / `token` 邀请制 |
-| `FCB_P2P_REGISTRATION_TOKEN` | — | token 模式的共享注册密钥 |
-| `FCB_P2P_ADMIN_PASSWORD` | — | 留空 = 管理 API 整体禁用；生产必须注入 |
-| `FCB_P2P_ANNOUNCE_MAX_PER_NODE` | `1000` | 单节点公告配额 |
-| `FCB_P2P_ANNOUNCE_MAX_TTL` | `168h` | 公告最大存活 |
-| `FCB_P2P_REGISTRATION_MAX_NODES` | `5000` | 全局节点租约上限（内存耗尽防护；0=默认值） |
-| `FCB_P2P_ANNOUNCE_MAX_TOTAL` | `50000` | 全局公告上限（0=默认值） |
-| `FCB_P2P_SIGNALING_ENABLED` | `true` | 信令信道开关（关闭仅影响直传配对） |
-| `FCB_P2P_SIGNALING_SESSION_TTL` | `10m` | 信令会话最长生命周期 |
-| `FCB_P2P_SIGNALING_IDLE_TIMEOUT` | `2m` | 连接空闲上限 |
-| `FCB_P2P_SIGNALING_MAX_PER_NODE` | `8` | 单节点并发信令会话上限 |
-| `FCB_P2P_REFLECTOR_ENABLED` | `true` | UDP 地址反射器（打洞前提） |
-| `FCB_P2P_RELAY_ENABLED` | `false` | 加密中继开关（打洞失败兜底） |
-| `FCB_P2P_RELAY_PORT` | `12347` | 中继 TCP 端口 |
-| `FCB_P2P_RELAY_MBPS` | `10` | 单信道带宽上限（Mbps，0=不限） |
-| `FCB_P2P_LOG_LEVEL` | `info` | debug / info / warn / error |
+| `PB_P2P_SERVER_PORT` | `12346` | HTTP/信令端口 |
+| `PB_P2P_SERVER_BEHIND_PROXY` | `false` | 反代部署置 true（取 X-Forwarded-For 参与限流） |
+| `PB_P2P_REGISTRATION_MODE` | `open` | `open` 开放注册 / `token` 邀请制 |
+| `PB_P2P_REGISTRATION_TOKEN` | — | token 模式的共享注册密钥 |
+| `PB_P2P_ADMIN_PASSWORD` | — | 留空 = 管理 API 整体禁用；生产必须注入 |
+| `PB_P2P_ANNOUNCE_MAX_PER_NODE` | `1000` | 单节点公告配额 |
+| `PB_P2P_ANNOUNCE_MAX_TTL` | `168h` | 公告最大存活 |
+| `PB_P2P_REGISTRATION_MAX_NODES` | `5000` | 全局节点租约上限（内存耗尽防护；0=默认值） |
+| `PB_P2P_ANNOUNCE_MAX_TOTAL` | `50000` | 全局公告上限（0=默认值） |
+| `PB_P2P_SIGNALING_ENABLED` | `true` | 信令信道开关（关闭仅影响直传配对） |
+| `PB_P2P_SIGNALING_SESSION_TTL` | `10m` | 信令会话最长生命周期 |
+| `PB_P2P_SIGNALING_IDLE_TIMEOUT` | `2m` | 连接空闲上限 |
+| `PB_P2P_SIGNALING_MAX_PER_NODE` | `8` | 单节点并发信令会话上限 |
+| `PB_P2P_REFLECTOR_ENABLED` | `true` | UDP 地址反射器（打洞前提） |
+| `PB_P2P_RELAY_ENABLED` | `false` | 加密中继开关（打洞失败兜底） |
+| `PB_P2P_RELAY_PORT` | `12347` | 中继 TCP 端口 |
+| `PB_P2P_RELAY_MBPS` | `10` | 单信道带宽上限（Mbps，0=不限） |
+| `PB_P2P_LOG_LEVEL` | `info` | debug / info / warn / error |
 
 ## API（v1）
 
