@@ -68,3 +68,45 @@ type nopWriteReader struct{ buf *bytes.Buffer }
 
 func (n *nopWriteReader) Write(p []byte) (int, error) { return n.buf.Write(p) }
 func (n *nopWriteReader) Read([]byte) (int, error)    { return 0, net.ErrClosed }
+
+// 缓冲复用回归：连续多帧读写内容正确（ReadMsg 返回切片仅在下次读前有效,
+// 调用方即取即用的契约);大帧触发缓冲扩容后仍可继续收发。
+func TestBufferReuseSequentialFrames(t *testing.T) {
+	a, b := net.Pipe()
+	defer func() { _ = a.Close() }()
+	defer func() { _ = b.Close() }()
+
+	key := [32]byte{3}
+	snd, _ := New(a, key, true)
+	rcv, _ := New(b, key, false)
+
+	frames := []struct {
+		typ  byte
+		body string
+	}{
+		{MsgMeta, `{"name":"a.bin","size":1048576}`},
+		{MsgReady, `{"offset":0}`},
+		{MsgChunk, string(make([]byte, 64<<10))}, // 满尺寸 chunk
+		{MsgChunk, "tail-bytes"},
+		{MsgFinal, `{"ok":true}`},
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		for _, fr := range frames {
+			if err := snd.WriteMsg(fr.typ, []byte(fr.body)); err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+	for i, fr := range frames {
+		typ, body, err := rcv.ReadMsg()
+		if err != nil || typ != fr.typ || string(body) != fr.body {
+			t.Fatalf("帧 %d: typ=%d len=%d err=%v", i, typ, len(body), err)
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("发送侧: %v", err)
+	}
+}

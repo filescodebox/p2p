@@ -28,6 +28,9 @@ const (
 	MsgReady byte = 2 // 接收方→发送方：JSON {offset}（断点续传起点）
 	MsgChunk byte = 3 // 发送方→接收方：原始文件字节
 	MsgFinal byte = 4 // 接收方→发送方：JSON {ok,message}
+	// v3 多流并行(2026-10-09):控制流信令帧 + 数据流分段帧
+	MsgPlan byte = 5 // 发送方→接收方(控制流)：JSON {streams}——将打开的数据流条数
+	MsgSeg  byte = 6 // 发送方→接收方(数据流)：JSON {start}——本流起始偏移,后随 chunk 至流 FIN
 )
 
 // MaxMessageSize 单条消息明文上限（chunk 64KB + 头部裕量）。
@@ -37,6 +40,11 @@ const MaxMessageSize = 256 << 10
 var ErrCorrupt = errors.New("wire: 帧校验失败")
 
 // Conn 消息化连接。
+//
+// 缓冲复用(2026-10-09):帧缓冲按 Conn 内部复用,ReadMsg 返回的 body 切片
+// 仅在**下次 ReadMsg 前**有效(调用方现均即取即用);读写方向各自独立缓冲,
+// 但同方向调用须在同一 goroutine 串行——与现有传输循环一致。大文件传输
+// 每 64KB chunk 省两次堆分配,长传输 GC 压力显著下降。
 type Conn struct {
 	rw   io.ReadWriter
 	aead cipher.AEAD
@@ -50,6 +58,9 @@ type Conn struct {
 	// 空间恒不相交。
 	dirTag  byte
 	peerTag byte
+
+	readBuf  []byte // 入站整帧复用(头+nonce+密文;解密原地覆写)
+	frameBuf []byte // 出站整帧复用(头+nonce+明文;加密原地覆写)
 }
 
 // 方向标签取可打印 ASCII，便于抓包排查；无密码学含义（仅分离 nonce 空间）。
@@ -72,6 +83,14 @@ func New(rw io.ReadWriter, key [32]byte, isSender bool) (*Conn, error) {
 	return &Conn{rw: rw, aead: aead, dirTag: dir, peerTag: peer}, nil
 }
 
+// Close 关闭底层承载(QUIC 流/中继 TCP;底层不支持时为 no-op)。
+func (c *Conn) Close() error {
+	if cl, ok := c.rw.(io.Closer); ok {
+		return cl.Close()
+	}
+	return nil
+}
+
 // DeriveKey 从 PAKE 会话密钥按用途派生子密钥（HKDF-SHA256，salt 空即
 // hash-len 零串，info 绑定用途标签与协议域）。2026-10-05 审计 P3：原实现为
 // sha256(session||label) 裸拼接，已按最佳实践换 HKDF；输出随本变更整体
@@ -88,35 +107,36 @@ func DeriveKey(session []byte, label string) [32]byte {
 	return k
 }
 
-// WriteMsg 编码、加密并写出一条消息。
+// WriteMsg 编码、加密并写出一条消息(整帧单次 Write,出站缓冲 Conn 内复用)。
 func (c *Conn) WriteMsg(msgType byte, body []byte) error {
 	if len(body)+1 > MaxMessageSize {
 		return fmt.Errorf("wire: 消息超限 %d", len(body)+1)
 	}
-	plaintext := make([]byte, 0, len(body)+1)
-	plaintext = append(plaintext, msgType)
-	plaintext = append(plaintext, body...)
+	total := len(body) + 1 // type 前缀
+	frameLen := 4 + chacha20poly1305.NonceSize + total + 16
+	if cap(c.frameBuf) < frameLen {
+		c.frameBuf = make([]byte, frameLen)
+	}
+	frame := c.frameBuf[:frameLen]
+	binary.BigEndian.PutUint32(frame, uint32(chacha20poly1305.NonceSize+total+16))
 
-	nonce := make([]byte, chacha20poly1305.NonceSize)
+	nonce := frame[4 : 4+chacha20poly1305.NonceSize]
 	nonce[0] = c.dirTag
 	binary.BigEndian.PutUint64(nonce[4:], c.seq)
 	c.seq++
 
-	ct := c.aead.Seal(nil, nonce, plaintext, nil)
-	head := make([]byte, 4)
-	binary.BigEndian.PutUint32(head, uint32(len(nonce)+len(ct)))
+	// 明文(含 type 前缀)就位后原地加密:dst=pt[:0] 复用明文存储,密文含
+	// 16B tag 恰好填满 frame 尾部
+	pt := frame[16 : 16+total]
+	pt[0] = msgType
+	copy(pt[1:], body)
+	c.aead.Seal(pt[:0], nonce, pt, nil)
 
-	if _, err := c.rw.Write(head); err != nil {
-		return err
-	}
-	if _, err := c.rw.Write(nonce); err != nil {
-		return err
-	}
-	_, err := c.rw.Write(ct)
+	_, err := c.rw.Write(frame)
 	return err
 }
 
-// ReadMsg 读取并解密一条消息。
+// ReadMsg 读取并解密一条消息。返回的 body 切片在下次 ReadMsg 前有效。
 func (c *Conn) ReadMsg() (byte, []byte, error) {
 	var head [4]byte
 	if _, err := io.ReadFull(c.rw, head[:]); err != nil {
@@ -126,7 +146,10 @@ func (c *Conn) ReadMsg() (byte, []byte, error) {
 	if total < chacha20poly1305.NonceSize+16 || total > MaxMessageSize+chacha20poly1305.NonceSize+16 {
 		return 0, nil, ErrCorrupt
 	}
-	buf := make([]byte, total)
+	if cap(c.readBuf) < int(total) {
+		c.readBuf = make([]byte, total)
+	}
+	buf := c.readBuf[:total]
 	if _, err := io.ReadFull(c.rw, buf); err != nil {
 		return 0, nil, err
 	}
@@ -136,7 +159,8 @@ func (c *Conn) ReadMsg() (byte, []byte, error) {
 	if nonce[0] != c.peerTag {
 		return 0, nil, ErrCorrupt
 	}
-	plaintext, err := c.aead.Open(nil, nonce, ct, nil)
+	// 原地解密:dst=ct[:0] 是 x/crypto 明文允许的密文存储复用形态
+	plaintext, err := c.aead.Open(ct[:0], nonce, ct, nil)
 	if err != nil {
 		return 0, nil, ErrCorrupt
 	}
