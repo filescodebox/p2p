@@ -1,0 +1,29 @@
+# 原生 fuzz 每日短跑:帧解析/首行解析/信令 JSON/注册中心端点是网络暴露面,
+# 单测只覆盖已知形态,fuzz 负责未知的解析失控(panic/5xx)。种子在 *_fuzz_test.go。
+name: Fuzz
+on:
+  schedule:
+    - cron: "23 19 * * *" # 每日 03:23 UTC,避整点 runner 高峰
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: go.sum
+      - name: Fuzz(每目标 1-1.5 分钟短跑)
+        run: |
+          set -e
+          go test -run xxx -fuzz '^FuzzReadMsg$'             -fuzztime 60s ./internal/wire/
+          go test -run xxx -fuzz '^FuzzWriteReadRoundTrip$'  -fuzztime 60s ./internal/wire/
+          go test -run xxx -fuzz '^FuzzReadLine$'            -fuzztime 60s ./internal/relay/
+          go test -run xxx -fuzz '^FuzzClientFrame$'         -fuzztime 60s ./internal/signaling/
+          go test -run xxx -fuzz '^FuzzRegisterHandler$'     -fuzztime 90s ./internal/server/
+          go test -run xxx -fuzz '^FuzzAnnounceHandler$'     -fuzztime 60s ./internal/server/

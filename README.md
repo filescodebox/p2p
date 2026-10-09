@@ -67,7 +67,9 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `PB_P2P_SERVER_PORT` | `12346` | HTTP/信令端口 |
-| `PB_P2P_SERVER_BEHIND_PROXY` | `false` | 反代部署置 true（取 X-Forwarded-For 参与限流） |
+| `PB_P2P_SERVER_BEHIND_PROXY` | `false` | 反代部署置 true（从 X-Forwarded-For **末段**解析客户端 IP，首段客户端可伪造不可信） |
+| `PB_P2P_SERVER_TRUSTED_PROXIES` | — | 可信反代网段 CIDR（逗号分隔）；设置后仅直连对端落在网段内才采信 XFF，从右向左跳过可信跳 |
+| `PB_P2P_TLS_CERT` / `PB_P2P_TLS_KEY` | — | 成对配置时 HTTP/WS 信令以 TLS 提供（推荐反代终结，裸机公网直连才用） |
 | `PB_P2P_REGISTRATION_MODE` | `open` | `open` 开放注册 / `token` 邀请制 |
 | `PB_P2P_REGISTRATION_TOKEN` | — | token 模式的共享注册密钥 |
 | `PB_P2P_ADMIN_PASSWORD` | — | 留空 = 管理 API 整体禁用；生产必须注入 |
@@ -83,6 +85,11 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 | `PB_P2P_RELAY_ENABLED` | `false` | 加密中继开关（打洞失败兜底） |
 | `PB_P2P_RELAY_PORT` | `12347` | 中继 TCP 端口 |
 | `PB_P2P_RELAY_MBPS` | `10` | 单信道带宽上限（Mbps，0=不限） |
+| `PB_P2P_RELAY_MAX_WAITING` | `1024` | 中继等待配对连接数上限 |
+| `PB_P2P_RELAY_MAX_CONNS_PER_IP` | `16` | 中继单 IP 并发连接上限（防随机 token 占满等待槽） |
+| `PB_P2P_RELAY_WAITING_TIMEOUT` | `60s` | 中继等待配对超时 |
+| `PB_P2P_STORE_SNAPSHOT_PATH` | — | 快照文件路径（空=纯内存；设置后周期+停机落盘、重启恢复） |
+| `PB_P2P_METRICS_STRICT` | `false` | true=未配置管理口令时 `/metrics` 直接 404（公共部署加固） |
 | `PB_P2P_LOG_LEVEL` | `info` | debug / info / warn / error |
 
 ## API（v1）
@@ -151,7 +158,8 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 - **注册中心不接触明文口令**：公告只存 `SHA-256(口令)`；解析方须持有口令才能计算哈希查询。
 - **离线枚举防线在宣布侧**：生态客户端（core）只对熵 ≥40bit 的口令发联邦公告，短数字取件码不出站；解析接口按 IP 严格限流。
 - **身份不可冒名**：node_id 即 Ed25519 公钥，全部写操作验签；管理端可强制下线作恶节点。
-- **限流分层**：读/写/管理路径独立令牌桶，超限 429。
+- **限流分层**：读/写/管理路径独立令牌桶，超限 429；resolve 叠加 per-hash 维度封顶（IP 池绕不过的单口令枚举闸），反代部署采信 XFF 仅限可信网段且取末段（首段可伪造）。
+- **传输协议版本协商（v3）**：配对后 PAKE 前双方显式交换协议版本，不一致给出可读错误而非密码学报错；QUIC 直传大文件多流并行（每流独立派生密钥防跨流 nonce 重用），中继/续传恒单流。
 - **信令信道准入**：WS 接入须持节点 Ed25519 签名（channel-join 负载）+ 有效租约；帧限 16KB、会话 TTL/空闲上限、单节点与全局配额——不存在匿名可占的房间。
 - **中继（M3）默认关闭**，开启后仅 PAKE 会话凭据放行且限带宽——不存在可被滥用的开放代理。
 
