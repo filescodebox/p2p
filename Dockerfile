@@ -39,7 +39,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /out/p2pc ./cmd/p2pc
 
 # ========== Stage 2: 运行时镜像 ==========
-FROM alpine:3.19
+FROM alpine:3.24
 
 RUN apk --no-cache add ca-certificates tzdata
 
