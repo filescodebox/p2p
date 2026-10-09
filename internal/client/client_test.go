@@ -459,3 +459,54 @@ func TestSendRecvMultiFileV4(t *testing.T) {
 	assertSameFile(t, big, bigOut)
 	assertSameFile(t, nested, nestedOut)
 }
+
+// TestRelayFirstBoundaryUpgrade 先通后优回归:1ms 预算强制快打洞失败→
+// 双方落中继→回环长打洞立刻成功→信令三步→arm→文件边界 MsgSwap 换直连。
+// 校验换源后第二个文件内容完好(换源机制正确性的关键回归)。
+func TestRelayFirstBoundaryUpgrade(t *testing.T) {
+	f := newFixture(t, true)
+	code, _ := GenerateCode()
+	sendDir := t.TempDir()
+	recvDir := t.TempDir()
+	// 两文件都 ≥8MB:file1 走中继多流耗时足够长,arm 必然在边界前就绪
+	f1 := randomFile(t, sendDir, "边界前.bin", 8<<20)
+	f2 := randomFile(t, sendDir, "边界后.bin", 8<<20)
+
+	so := testOpts(f, "send")
+	so.PunchBudget = time.Millisecond // 快打洞必败,中继先行
+	so.DisablePunch = false
+	errCh := make(chan error, 1)
+	go func() {
+		c, err := New(so)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		_, err = c.Send([]string{f1, f2}, code)
+		errCh <- err
+	}()
+
+	waitForAnnounce(t, f.base, code)
+	ro := testOpts(f, "recv")
+	ro.PunchBudget = time.Millisecond
+	c, err := New(ro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := c.Receive(code, recvDir)
+	if err != nil {
+		t.Fatalf("接收: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("发送: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("期望 2 个文件,实际 %d", len(files))
+	}
+	byName := map[string]string{}
+	for _, p := range files {
+		byName[filepath.Base(p)] = p
+	}
+	assertSameFile(t, f1, byName["边界前.bin"])
+	assertSameFile(t, f2, byName["边界后.bin"])
+}
