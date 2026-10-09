@@ -37,7 +37,10 @@ make build && ./bin/p2pd            # 服务端:12346(HTTP/WS/反射器)+12347(�
 make smoke                          # 冒烟:注册/公告/解析/信令/直传回环全流程
 ```
 
-## 设备直传（p2pc，M3）
+## 设备直传（p2pc，M3+）
+
+支持多文件/目录、断点续传、可选 zstd 压缩(>1MB 自动)、逐文件授权、
+大文件多流并行、先通后优(中继先行+后台打洞升级直连)与 IPv6 双栈。
 
 ```bash
 # 发送方(自动生成口令 XXXX-XXXX-XXXX 并等待对方取走)
@@ -82,7 +85,7 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 | `PB_P2P_SIGNALING_IDLE_TIMEOUT` | `2m` | 连接空闲上限 |
 | `PB_P2P_SIGNALING_MAX_PER_NODE` | `8` | 单节点并发信令会话上限 |
 | `PB_P2P_REFLECTOR_ENABLED` | `true` | UDP 地址反射器（打洞前提） |
-| `PB_P2P_RELAY_ENABLED` | `false` | 加密中继开关（打洞失败兜底） |
+| `PB_P2P_RELAY_ENABLED` | `true` | 加密中继开关(打洞失败兜底;令牌配对非开放代理) |
 | `PB_P2P_RELAY_PORT` | `12347` | 中继 TCP 端口 |
 | `PB_P2P_RELAY_MBPS` | `10` | 单信道带宽上限（Mbps，0=不限） |
 | `PB_P2P_RELAY_MAX_WAITING` | `1024` | 中继等待配对连接数上限 |
@@ -91,6 +94,13 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 | `PB_P2P_STORE_SNAPSHOT_PATH` | — | 快照文件路径（空=纯内存；设置后周期+停机落盘、重启恢复） |
 | `PB_P2P_METRICS_STRICT` | `false` | true=未配置管理口令时 `/metrics` 直接 404（公共部署加固） |
 | `PB_P2P_LOG_LEVEL` | `info` | debug / info / warn / error |
+| `PB_P2P_SERVER_TLS_CERT/_KEY` | — | HTTP/WS 信令 TLS(成对配置) |
+| `PB_P2P_STORE_SNAPSHOT_PATH` | — | 公告快照持久化(重启消除失联窗口) |
+| `PB_P2P_METRICS_STRICT` | `false` | 未配管理口令时 /metrics 404(公共部署加固) |
+
+客户端多源:`PB_P2P_REGISTRIES` 未设时可用 `--registries`(逗号分隔);
+`--registry` 传裸域名自动走 DNS SRV(`_p2pc._tcp.<域>`)发现。公共节点
+运营(部署/DNS/容量/滥用治理)见 [docs/PUBLIC-NODES.md](./docs/PUBLIC-NODES.md)。
 
 ## API（v1）
 
@@ -161,7 +171,8 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 - **限流分层**：读/写/管理路径独立令牌桶，超限 429；resolve 叠加 per-hash 维度封顶（IP 池绕不过的单口令枚举闸），反代部署采信 XFF 仅限可信网段且取末段（首段可伪造）。
 - **传输协议版本协商（v3）**：配对后 PAKE 前双方显式交换协议版本，不一致给出可读错误而非密码学报错；QUIC 直传大文件多流并行（每流独立派生密钥防跨流 nonce 重用），中继/续传恒单流。
 - **信令信道准入**：WS 接入须持节点 Ed25519 签名（channel-join 负载）+ 有效租约；帧限 16KB、会话 TTL/空闲上限、单节点与全局配额——不存在匿名可占的房间。
-- **中继（M3）默认关闭**，开启后仅 PAKE 会话凭据放行且限带宽——不存在可被滥用的开放代理。
+- **中继默认开启**但非开放代理:配对须 PAKE 派生令牌,无令牌连接 60s 超时即断,另有等待槽/单 IP/带宽三重上限(先通后优:中继上起传,后台打洞成功后文件边界自动升级直连)。
+- **传输协议版本协商(v4)**:多文件 manifest 流(逐文件授权/部分接受/目录白名单消毒/zstd 压缩/单遍哈希);多注册中心按 rendezvous hashing 零协调分片,失败顺延。
 
 ## 生态导航
 

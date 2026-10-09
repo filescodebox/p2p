@@ -53,7 +53,10 @@ type Server struct {
 
 // Relay 加密中继配置（M3 打洞失败的兜底;默认整机关闭）。
 type Relay struct {
-	// Enabled 总开关（默认 false——不存在可被滥用的开放代理）。
+	// Enabled 总开关(默认 true——行业共识:中继是打洞失败的必要兜底,
+	// 无中继=对端不可直连即传输失败)。非开放代理:配对须 PAKE 派生令牌,
+	// 无令牌连接 60s 等待超时即断;另有等待槽/单 IP/带宽三重上限。个人
+	// 纯内网部署可显式关闭。
 	// env: PB_P2P_RELAY_ENABLED
 	Enabled bool
 	// Port 中继 TCP 端口。env: PB_P2P_RELAY_PORT
@@ -176,7 +179,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("signaling.max_sessions_per_node", 8)
 	v.SetDefault("signaling.max_total_sessions", 1024)
 	// 中继(M3 兜底;默认关)+UDP 反射器(打洞前提;默认开)
-	v.SetDefault("relay.enabled", false)
+	v.SetDefault("relay.enabled", true)
 	v.SetDefault("relay.port", 12347)
 	v.SetDefault("relay.mbps_per_channel", 10)
 	v.SetDefault("relay.max_waiting", 1024)
