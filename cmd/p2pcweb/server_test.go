@@ -11,8 +11,8 @@ func TestGuardTokenAndHost(t *testing.T) {
 	s := &Server{token: "secret", loopback: true, port: "12348"}
 	h := s.guard(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	get := func(host, query string, header string) int {
-		r := httptest.NewRequest("GET", "/"+query, nil)
+	get := func(host, target string, header string) int {
+		r := httptest.NewRequest("GET", target, nil)
 		r.Host = host
 		if header != "" {
 			r.Header.Set("X-P2PCWEB", header)
@@ -22,21 +22,25 @@ func TestGuardTokenAndHost(t *testing.T) {
 		return w.Code
 	}
 
-	if c := get("127.0.0.1:12348", "?t=secret", ""); c != 200 {
-		t.Fatalf("查询令牌被拒: %d", c)
+	if c := get("127.0.0.1:12348", "/?t=secret", ""); c != 200 {
+		t.Fatalf("首屏文档查询令牌被拒: %d", c)
 	}
-	if c := get("127.0.0.1:12348", "", "secret"); c != 200 {
+	if c := get("127.0.0.1:12348", "/", "secret"); c != 200 {
 		t.Fatalf("头令牌被拒: %d", c)
 	}
-	if c := get("localhost:12348", "?t=secret", ""); c != 200 {
+	if c := get("localhost:12348", "/?t=secret", ""); c != 200 {
 		t.Fatalf("localhost 被拒: %d", c)
 	}
+	// API 一律头令牌:query 令牌只放行首屏文档,防凭据进每个请求的 URL(日志面)
+	if c := get("127.0.0.1:12348", "/api/state?t=secret", ""); c != http.StatusForbidden {
+		t.Fatalf("API query 令牌应被拒, got %d", c)
+	}
 	for name, c := range map[string]int{
-		"缺令牌":     get("127.0.0.1:12348", "", ""),
-		"错令牌":     get("127.0.0.1:12348", "?t=wrong", ""),
-		"rebind":  get("evil.example.com:12348", "?t=secret", ""),
-		"端口不符":    get("127.0.0.1:9999", "?t=secret", ""),
-		"无端口Host": get("127.0.0.1", "?t=secret", ""),
+		"缺令牌":     get("127.0.0.1:12348", "/", ""),
+		"错令牌":     get("127.0.0.1:12348", "/?t=wrong", ""),
+		"rebind":  get("evil.example.com:12348", "/?t=secret", ""),
+		"端口不符":    get("127.0.0.1:9999", "/?t=secret", ""),
+		"无端口Host": get("127.0.0.1", "/?t=secret", ""),
 	} {
 		if c != http.StatusForbidden {
 			t.Fatalf("%s 期望 403, got %d", name, c)

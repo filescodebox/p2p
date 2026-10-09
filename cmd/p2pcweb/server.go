@@ -6,6 +6,7 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/hex"
@@ -49,6 +50,14 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// secureEqual 恒时比较(先双侧 SHA-256 定长化,消除长度侧信道;与
+// internal/server 同款)。
+func secureEqual(a, b string) bool {
+	ha := sha256.Sum256([]byte(a))
+	hb := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -60,13 +69,17 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 }
 
 // guard 令牌 + Host 校验。
+// 令牌优先取 X-P2PCWEB 头;query 令牌仅对首屏文档请求(/)放行——API 若也
+// 收 query 令牌,每个请求的 URL 都带凭据,会进反代/浏览器历史等日志面。
+// 页面加载后由前端把令牌挪入 sessionStorage 并以头方式携带,URL 里的
+// ?t= 只在入口那一次出现。
 func (s *Server) guard(fn http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tok := r.URL.Query().Get("t")
-		if tok == "" {
-			tok = r.Header.Get("X-P2PCWEB")
+		tok := r.Header.Get("X-P2PCWEB")
+		if tok == "" && r.URL.Path == "/" {
+			tok = r.URL.Query().Get("t")
 		}
-		if subtle.ConstantTimeCompare([]byte(tok), []byte(s.token)) != 1 {
+		if !secureEqual(tok, s.token) {
 			http.Error(w, "403：令牌无效，请从启动时打印的完整地址进入", http.StatusForbidden)
 			return
 		}

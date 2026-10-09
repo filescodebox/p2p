@@ -99,14 +99,24 @@
   <input type="file" id="file" style="display:none" />
 
   <script>
-    const T = new URLSearchParams(location.search).get('t') || '';
+    // 令牌治理：入口 URL 的 ?t= 只在首屏出现一次——读入 sessionStorage 后
+    // 立即从地址栏抹掉,此后所有 API 以 X-P2PCWEB 头携带,令牌不再进
+    // 任何请求 URL(反代/浏览器历史等日志面)。
+    let T = sessionStorage.getItem('p2pcweb-t') || '';
+    const qsT = new URLSearchParams(location.search).get('t');
+    if (qsT) {
+      T = qsT;
+      sessionStorage.setItem('p2pcweb-t', T);
+      history.replaceState(null, '', location.pathname);
+    }
     const $ = id => document.getElementById(id);
 
-    function api(path) { return '/api/' + path + (path.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(T); }
+    function api(path) { return '/api/' + path; }
+    function auth() { return { 'X-P2PCWEB': T }; }
     async function postJSON(path, body) {
       const r = await fetch(api(path), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: Object.assign({ 'Content-Type': 'application/json' }, auth()),
         body: JSON.stringify(body || {})
       });
       const data = await r.json().catch(() => ({}));
@@ -124,7 +134,7 @@
     // ── 初始化 ──
     let st = {};
     (async () => {
-      st = await (await fetch(api('state'))).json();
+      st = await (await fetch(api('state'), { headers: auth() })).json();
       $('url').value = st.server_url || '';
       $('registry').value = st.registry || '';
       $('out-dir').textContent = st.out_dir || '';
@@ -133,10 +143,29 @@
       sse();
     })().catch(e => { $('p2p-err').textContent = '初始化失败: ' + e.message; });
 
-    function sse() {
-      const es = new EventSource(api('events'));
-      es.onmessage = e => { try { onEvent(JSON.parse(e.data)); } catch (_) {} };
-      // 断线由 EventSource 自动重连
+    // SSE 经 fetch 流式消费(EventSource 无法自定义请求头);断线 3s 重连。
+    async function sse() {
+      for (;;) {
+        try {
+          const r = await fetch(api('events'), { headers: auth() });
+          const reader = r.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let idx;
+            while ((idx = buf.indexOf('\n\n')) >= 0) {
+              const chunk = buf.slice(0, idx);
+              buf = buf.slice(idx + 2);
+              const line = chunk.split('\n').find(l => l.startsWith('data: '));
+              if (line) { try { onEvent(JSON.parse(line.slice(6))); } catch (_) {} }
+            }
+          }
+        } catch (_) {}
+        await new Promise(res => setTimeout(res, 3000));
+      }
     }
 
     function onEvent(p) {
@@ -177,7 +206,7 @@
       fd.append('file', f, f.name);
       $('p2p-err').textContent = '正在取文件到本机（' + f.name + '）…';
       try {
-        const r = await fetch(api('send?registry=' + encodeURIComponent(registry)), { method: 'POST', body: fd });
+        const r = await fetch(api('send?registry=' + encodeURIComponent(registry)), { method: 'POST', headers: auth(), body: fd });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
         $('p2p-err').textContent = '';
@@ -201,7 +230,7 @@
     };
 
     $('cancel').onclick = async () => {
-      try { await fetch(api('cancel'), { method: 'POST' }); } catch (_) {}
+      try { await fetch(api('cancel'), { method: 'POST', headers: auth() }); } catch (_) {}
     };
 
     function showCode(code) {
