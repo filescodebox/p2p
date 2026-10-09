@@ -68,7 +68,7 @@ func newFixture(t *testing.T, withRelay bool) *fixture {
 			t.Fatal(err)
 		}
 		f.relay = ln.Addr().String()
-		go func() { _ = relay.Serve(ctx, ln, 0, nil) }()
+		go func() { _ = relay.Serve(ctx, ln, relay.Params{}) }()
 		t.Cleanup(func() { _ = ln.Close() })
 	}
 	return f

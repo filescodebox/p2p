@@ -84,3 +84,42 @@ func TestExpiryReadPath(t *testing.T) {
 		t.Fatal("Expired 应为 true")
 	}
 }
+
+func TestSnapshotRoundtrip(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	now := time.Now()
+	if err := s.UpsertNode(ctx, store.Node{ID: "n1", URL: "https://a", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAnnounce(ctx, store.Announce{CodeHash: "h1", NodeID: "n1", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 全新实例恢复
+	s2 := New()
+	if err := s2.Restore(data); err != nil {
+		t.Fatal(err)
+	}
+	n, ok, err := s2.GetNode(ctx, "n1")
+	if err != nil || !ok || n.URL != "https://a" {
+		t.Fatalf("节点未恢复: %v %v %v", n, ok, err)
+	}
+	a, ok, err := s2.GetAnnounce(ctx, "h1")
+	if err != nil || !ok || a.NodeID != "n1" {
+		t.Fatalf("公告未恢复: %v %v %v", a, ok, err)
+	}
+
+	// 损坏快照必须报错而非半恢复
+	if err := s2.Restore([]byte("not json")); err == nil {
+		t.Fatal("损坏快照应报错")
+	}
+	if err := s2.Restore([]byte(`{"version":99}`)); err == nil {
+		t.Fatal("未知版本应报错")
+	}
+}

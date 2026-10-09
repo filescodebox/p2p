@@ -32,17 +32,42 @@ const (
 	maxConnsPerIP = 16
 )
 
+// Params 中继服务参数(0 值/nil 用内置默认,见常量)。
+type Params struct {
+	// BytesPerSec 单信道带宽上限(字节/秒,0=不限,下限 minBytesPerSec)。
+	BytesPerSec int64
+	// MaxWaiting 等待配对连接数上限(0=默认)。
+	MaxWaiting int
+	// MaxConnsPerIP 单 IP 并发连接上限(0=默认)。
+	MaxConnsPerIP int
+	// WaitingTimeout 等待配对超时(0=默认)。
+	WaitingTimeout time.Duration
+	Log            *slog.Logger
+}
+
 // Serve 阻塞服务中继，直到 ctx 结束或 listener 关闭。
-func Serve(ctx context.Context, ln net.Listener, bytesPerSec int64, log *slog.Logger) error {
-	if bytesPerSec > 0 && bytesPerSec < minBytesPerSec {
-		bytesPerSec = minBytesPerSec
+func Serve(ctx context.Context, ln net.Listener, p Params) error {
+	if p.BytesPerSec > 0 && p.BytesPerSec < minBytesPerSec {
+		p.BytesPerSec = minBytesPerSec
+	}
+	if p.MaxWaiting <= 0 {
+		p.MaxWaiting = maxWaiting
+	}
+	if p.MaxConnsPerIP <= 0 {
+		p.MaxConnsPerIP = maxConnsPerIP
+	}
+	if p.WaitingTimeout <= 0 {
+		p.WaitingTimeout = waitingTimeout
 	}
 	s := &server{
-		waiting:     make(map[string]net.Conn),
-		since:       make(map[string]time.Time),
-		perIP:       make(map[string]int),
-		bytesPerSec: bytesPerSec,
-		log:         log,
+		waiting:        make(map[string]net.Conn),
+		since:          make(map[string]time.Time),
+		perIP:          make(map[string]int),
+		bytesPerSec:    p.BytesPerSec,
+		maxWaiting:     p.MaxWaiting,
+		maxConnsPerIP:  p.MaxConnsPerIP,
+		waitingTimeout: p.WaitingTimeout,
+		log:            p.Log,
 	}
 	// 等待超时清扫
 	go func() {
@@ -55,7 +80,7 @@ func Serve(ctx context.Context, ln net.Listener, bytesPerSec int64, log *slog.Lo
 			case <-t.C:
 				s.mu.Lock()
 				for tok, c := range s.waiting {
-					if time.Since(s.since[tok]) > waitingTimeout {
+					if time.Since(s.since[tok]) > s.waitingTimeout {
 						_ = c.Close()
 						delete(s.waiting, tok)
 						delete(s.since, tok)
@@ -82,18 +107,21 @@ func Serve(ctx context.Context, ln net.Listener, bytesPerSec int64, log *slog.Lo
 }
 
 type server struct {
-	mu          sync.Mutex
-	waiting     map[string]net.Conn
-	since       map[string]time.Time
-	perIP       map[string]int
-	bytesPerSec int64
-	log         *slog.Logger
+	mu             sync.Mutex
+	waiting        map[string]net.Conn
+	since          map[string]time.Time
+	perIP          map[string]int
+	bytesPerSec    int64
+	maxWaiting     int
+	maxConnsPerIP  int
+	waitingTimeout time.Duration
+	log            *slog.Logger
 }
 
 func (s *server) handle(ctx context.Context, conn net.Conn) {
 	ip := remoteIP(conn)
 	s.mu.Lock()
-	if s.perIP[ip] >= maxConnsPerIP {
+	if s.perIP[ip] >= s.maxConnsPerIP {
 		s.mu.Unlock()
 		_ = conn.Close()
 		return
@@ -109,7 +137,7 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 		s.mu.Unlock()
 	}()
 
-	_ = conn.SetDeadline(time.Now().Add(waitingTimeout))
+	_ = conn.SetDeadline(time.Now().Add(s.waitingTimeout))
 	// 逐字节读首行:bufio 会预读多字节,把客户端紧随其后的首帧吞进缓冲
 	token, ok := readLine(conn, maxTokenLen)
 	if !ok {
@@ -119,7 +147,7 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 	_ = conn.SetDeadline(time.Time{}) // 清除等待期 deadline,管道按限速自由流动
 
 	s.mu.Lock()
-	if len(s.waiting) >= maxWaiting {
+	if len(s.waiting) >= s.maxWaiting {
 		s.mu.Unlock()
 		_ = conn.Close()
 		return

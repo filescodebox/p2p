@@ -298,9 +298,66 @@ func TestBehindProxyClientIP(t *testing.T) {
 	_, list := c.do(http.MethodGet, "/v1/admin/nodes", nil, map[string]string{
 		"Authorization": "Bearer pw",
 	})
-	if !strings.Contains(string(list), `"ip":"203.0.113.7"`) {
-		t.Fatalf("应取 XFF 首段为客户端 IP: %s", list)
+	// 首段是客户端自带可伪造的,末段才是可信反代 append 的真实来源
+	if !strings.Contains(string(list), `"ip":"10.0.0.1"`) {
+		t.Fatalf("应取 XFF 末段(反代追加段)为客户端 IP: %s", list)
 	}
+}
+
+func TestClientIPXFFSemantics(t *testing.T) {
+	mk := func(behindProxy bool, proxies []string) *Server {
+		return &Server{cfg: config.Config{Server: config.Server{
+			BehindProxy: behindProxy, TrustedProxies: proxies,
+		}}}
+	}
+	req := func(remote, xff string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/nodes/register", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	t.Run("未开 behind_proxy 时忽略 XFF", func(t *testing.T) {
+		s := mk(false, nil)
+		if got := s.clientIP(req("10.0.0.1:5555", "203.0.113.7")); got != "10.0.0.1" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("behind_proxy 取末段(反代追加段)", func(t *testing.T) {
+		s := mk(true, nil)
+		if got := s.clientIP(req("10.0.0.1:5555", "203.0.113.7, 10.0.0.1")); got != "10.0.0.1" {
+			t.Fatalf("got %q", got)
+		}
+		if got := s.clientIP(req("10.0.0.1:5555", "203.0.113.7")); got != "203.0.113.7" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("可信跳向左走,取第一个不可信地址", func(t *testing.T) {
+		s := mk(true, []string{"10.0.0.0/8", "127.0.0.0/8"})
+		// 10.0.0.1 是可信代理跳,继续向左
+		if got := s.clientIP(req("10.0.0.1:5555", "1.2.3.4, 10.0.0.1")); got != "1.2.3.4" {
+			t.Fatalf("got %q", got)
+		}
+		// 全部为可信跳:客户端直连可信代理,取最左段
+		if got := s.clientIP(req("10.0.0.1:5555", "5.6.7.8, 10.0.0.2")); got != "5.6.7.8" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("直连对端不在可信网段则忽略 XFF", func(t *testing.T) {
+		s := mk(true, []string{"192.168.0.0/16"})
+		// RemoteAddr=10.0.0.1 不在可信网段,XFF 整体不采信
+		if got := s.clientIP(req("10.0.0.1:5555", "1.2.3.4")); got != "10.0.0.1" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("畸形 XFF 段按不可信处理不 panic", func(t *testing.T) {
+		s := mk(true, nil)
+		if got := s.clientIP(req("10.0.0.1:5555", "not-an-ip, 10.0.0.1")); got != "10.0.0.1" {
+			t.Fatalf("got %q", got)
+		}
+	})
 }
 
 func testGauge(t *testing.T, m *Metrics, name string) float64 {
@@ -316,4 +373,41 @@ func testGauge(t *testing.T, m *Metrics, name string) float64 {
 	}
 	t.Fatalf("指标 %s 未找到", name)
 	return 0
+}
+
+func TestMetricsStrict(t *testing.T) {
+	ts, _ := newTestServer(t, func(c *config.Config) {
+		c.Metrics.Strict = true // 未配管理口令 + strict → 404 不暴露
+	})
+	c := testClient{t: t, base: ts}
+	resp, _ := c.do(http.MethodGet, "/metrics", nil, nil)
+	if resp.StatusCode != 404 {
+		t.Fatalf("strict 模式未配口令应 404: %d", resp.StatusCode)
+	}
+	// 配了口令时 strict 不影响 adminGate 路径
+	ts2, _ := newTestServer(t, func(c *config.Config) {
+		c.Metrics.Strict = true
+		c.Admin.Password = "pw"
+	})
+	c2 := testClient{t: t, base: ts2}
+	resp, _ = c2.do(http.MethodGet, "/metrics", nil, map[string]string{"Authorization": "Bearer pw"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("配口令后 metrics 应正常: %d", resp.StatusCode)
+	}
+}
+
+func TestResolvePerHashRateLimit(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+	c := testClient{t: t, base: ts}
+	hash := strings.Repeat("a", 64)
+	// 单 hash 超过 10/s 突发 60 后必须 429(IP 维度限额远未触顶)
+	var last int
+	for i := 0; i < 70; i++ {
+		resp, _ := c.do(http.MethodGet, "/v1/resolve/"+hash, nil, nil)
+		last = resp.StatusCode
+		if last == http.StatusTooManyRequests {
+			return
+		}
+	}
+	t.Fatalf("per-hash 限流未生效,最后状态 %d", last)
 }

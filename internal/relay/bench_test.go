@@ -19,7 +19,7 @@ func BenchmarkRelayThroughput(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	go func() { _ = Serve(ctx, ln, 0, nil) }()
+	go func() { _ = Serve(ctx, ln, Params{}) }()
 	b.Cleanup(func() { _ = ln.Close() })
 
 	token := make([]byte, 32)

@@ -59,6 +59,9 @@ type Server struct {
 	resolveLim *ratelimit.KeyedLimiter // 读路径(resolve/node 查询)
 	writeLim   *ratelimit.KeyedLimiter // 写路径(register/announce/信道接入)
 	adminLim   *ratelimit.KeyedLimiter // 管理端
+	// resolveHashLim per-hash 维度限流:per-IP 限不住 IP 池对热点 code_hash
+	// 的选择明文枚举/定向阻断观测,双键叠加(IP 10x, hash 1x)。
+	resolveHashLim *ratelimit.KeyedLimiter
 }
 
 // New 构造 Server。ctx 用于限流器/信令清扫协程的生命周期。
@@ -91,9 +94,10 @@ func New(ctx context.Context, p Params) *Server {
 		metrics:    m,
 		version:    p.Version,
 		hub:        hub,
-		resolveLim: newKeyedLimiter(ctx, 1, 120), // resolve: 平均 1/s 突发 120
-		writeLim:   newKeyedLimiter(ctx, 2, 120), // 写路径: 平均 2/s 突发 120
-		adminLim:   newKeyedLimiter(ctx, 10, 60), // 管理端宽松
+		resolveLim: newKeyedLimiter(ctx, 1, 120),      // resolve: 平均 1/s 突发 120
+		writeLim:   newKeyedLimiter(ctx, 2, 120),      // 写路径: 平均 2/s 突发 120
+		adminLim:   newKeyedLimiter(ctx, 10, 60),      // 管理端宽松
+		resolveHashLim: newKeyedLimiter(ctx, 10, 60),  // 单 hash: 平均 10/s(正常取件重试 2/s×多接收方余量)
 	}
 }
 
@@ -104,9 +108,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	// /metrics 门禁(2026-10-05 审计 P3):配置了管理口令时同 adminGate 校验
 	// (Prometheus 抓取侧配 Authorization: Bearer <PB_P2P_ADMIN_PASSWORD>);
-	// 未配置口令保持开放(默认部署兼容,文档声明)。
+	// 未配置口令时默认开放(部署兼容,文档声明),metrics.strict=true 的
+	// 公共部署则干脆 404 不暴露——宁缺勿泄。
 	if s.cfg.Admin.Password != "" {
 		mux.Handle("GET /metrics", s.adminGate(promHandler(s.metrics.reg).ServeHTTP))
+	} else if s.cfg.Metrics.Strict {
+		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+			http.NotFound(w, nil)
+		})
 	} else {
 		mux.Handle("GET /metrics", promHandler(s.metrics.reg))
 	}
@@ -212,6 +221,14 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	// per-hash 维度限流:同一 code_hash 的解析频率封顶(IP 池绕不过),
+	// 防对热点口令的选择明文枚举与定向阻断观测。正常取件(含 500ms 重试)
+	// 远低于该阈值。
+	if !s.resolveHashLim.Allow(strings.ToLower(r.PathValue("hash"))) {
+		s.metrics.rateLimited.Inc()
+		writeErr(w, http.StatusTooManyRequests, errRateLimited)
+		return
+	}
 	a, node, err := s.svc.Resolve(r.Context(), r.PathValue("hash"))
 	if err != nil {
 		s.metrics.resolveTotal.WithLabelValues("miss").Inc()
@@ -311,13 +328,50 @@ func (s *Server) writeErr(w http.ResponseWriter, err error) {
 	}
 }
 
-// clientIP 取客户端 IP。BehindProxy=true 时信任 X-Forwarded-For 首段。
+// clientIP 取客户端 IP。
+// BehindProxy=true 时解析 X-Forwarded-For——从最右段向左走,跳过可信代理跳
+// (TrustedProxies 网段),第一个不可信地址即客户端真实来源。此前取首段的实现
+// 可被客户端伪造(每个请求换一个假首段=每个假 IP 一个新限流桶,keyed 限流
+// 整体失效)。直连对端不在可信网段时忽略 XFF 回退 RemoteAddr。
 func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.Server.BehindProxy {
+	remote := remoteIP(r)
+	if s.cfg.Server.BehindProxy && s.trustedProxy(remote) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			return strings.TrimSpace(strings.Split(xff, ",")[0])
+			parts := strings.Split(xff, ",")
+			for i := len(parts) - 1; i > 0; i-- {
+				if ip := strings.TrimSpace(parts[i]); !trustedIP(s.cfg.Server.TrustedProxies, ip) {
+					return ip
+				}
+			}
+			// 全部为可信跳:客户端直连可信代理,取最左段
+			return strings.TrimSpace(parts[0])
 		}
 	}
+	return remote
+}
+
+// trustedProxy 直连对端是否可作为反代采信其 XFF。未配置网段时信任直连对端
+// (单层反代的常见形态;多层代理链须显式列出内层代理网段)。
+func (s *Server) trustedProxy(remote string) bool {
+	return len(s.cfg.Server.TrustedProxies) == 0 || trustedIP(s.cfg.Server.TrustedProxies, remote)
+}
+
+// trustedIP ip 是否落在任一 CIDR 网段内。
+func trustedIP(cidrs []string, ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	for _, c := range cidrs {
+		if _, ipnet, err := net.ParseCIDR(strings.TrimSpace(c)); err == nil && ipnet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteIP 去端口的直连对端地址。
+func remoteIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

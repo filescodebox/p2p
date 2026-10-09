@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -109,9 +110,14 @@ const (
 // RegisterNode 注册或续租节点(register 与 heartbeat 同语义,幂等 upsert)。
 func (s *Service) RegisterNode(ctx context.Context, in RegisterInput, ip string) (store.Node, error) {
 	// 恒时比较（2026-10-05 审计：普通 == 比较留时序侧信道；写路径限流已有，
-	// 此处补齐防爆破语义）
-	if s.p.RequireToken != "" && subtle.ConstantTimeCompare([]byte(in.Token), []byte(s.p.RequireToken)) != 1 {
-		return store.Node{}, fmt.Errorf("%w: registration token 不匹配", ErrUnauthorized)
+	// 此处补齐防爆破语义。2026-10-09 追加：双侧先 SHA-256 定长化再比,消除
+	// ConstantTimeCompare 对不等长输入的长度泄露）
+	if s.p.RequireToken != "" {
+		ta := sha256.Sum256([]byte(in.Token))
+		tb := sha256.Sum256([]byte(s.p.RequireToken))
+		if subtle.ConstantTimeCompare(ta[:], tb[:]) != 1 {
+			return store.Node{}, fmt.Errorf("%w: registration token 不匹配", ErrUnauthorized)
+		}
 	}
 	// node_id 归一化小写(2026-10-05 审计 P3:hex 大小写变体可绕过按字符串
 	// 计数的配额;合法客户端 hex.EncodeToString 恒小写,归一不影响签名——

@@ -30,7 +30,7 @@ func TestPairingPipesBothWays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = Serve(ctx, ln, 0, nil) }()
+	go func() { _ = Serve(ctx, ln, Params{}) }()
 	t.Cleanup(func() { _ = ln.Close() })
 
 	raw := make([]byte, 32)
@@ -76,7 +76,7 @@ func TestBadLineDisconnects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = Serve(ctx, ln, 0, nil) }()
+	go func() { _ = Serve(ctx, ln, Params{}) }()
 	t.Cleanup(func() { _ = ln.Close() })
 
 	conn, err := net.DialTimeout("tcp", ln.Addr().String(), 3*time.Second)

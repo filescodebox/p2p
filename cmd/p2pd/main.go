@@ -49,9 +49,19 @@ func main() {
 
 	logger := newLogger(cfg.Log.Level)
 	slog.SetDefault(logger)
+	for _, w := range cfg.Warnings {
+		logger.Warn(w)
+	}
+
+	memStore := memory.New()
+	if cfg.Store.SnapshotPath != "" {
+		if err := restoreSnapshot(memStore, cfg.Store.SnapshotPath, logger); err != nil {
+			logger.Warn("快照恢复失败,以空存储启动", "path", cfg.Store.SnapshotPath, "err", err)
+		}
+	}
 
 	svc := registry.New(registry.Params{
-		Store:             memory.New(),
+		Store:             memStore,
 		RequireToken:      registrationToken(cfg),
 		MinNodeTTL:        cfg.Registration.MinNodeTTL,
 		MaxNodeTTL:        cfg.Registration.MaxNodeTTL,
@@ -111,10 +121,38 @@ func main() {
 			logger.Error("中继监听失败", "port", cfg.Relay.Port, "err", err)
 			os.Exit(1)
 		}
-		bps := cfg.Relay.MbpsPerChannel * 1_000_000 / 8
 		go func() {
-			if err := relayPkg.Serve(ctx, ln, bps, logger); err != nil {
+			p := relayPkg.Params{
+				BytesPerSec:    cfg.Relay.MbpsPerChannel * 1_000_000 / 8,
+				MaxWaiting:     cfg.Relay.MaxWaiting,
+				MaxConnsPerIP:  cfg.Relay.MaxConnsPerIP,
+				WaitingTimeout: cfg.Relay.WaitingTimeout,
+				Log:            logger,
+			}
+			if err := relayPkg.Serve(ctx, ln, p); err != nil {
 				logger.Error("中继异常退出", "err", err)
+			}
+		}()
+	}
+
+	// 快照周期落盘（store.snapshot_path 非空时启用;atomic rename 保证不写坏）。
+	if cfg.Store.SnapshotPath != "" {
+		interval := cfg.Store.SnapshotInterval
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		go func() {
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if err := saveSnapshot(memStore, cfg.Store.SnapshotPath); err != nil {
+						logger.Warn("快照落盘失败", "path", cfg.Store.SnapshotPath, "err", err)
+					}
+				}
 			}
 		}()
 	}
@@ -129,7 +167,13 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var err error
+		if cfg.Server.TLSCert != "" {
+			err = httpSrv.ListenAndServeTLS(cfg.Server.TLSCert, cfg.Server.TLSKey)
+		} else {
+			err = httpSrv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -137,17 +181,28 @@ func main() {
 	logger.Info("p2pd 已启动",
 		"version", version.Version, "commit", version.BuildCommit,
 		"port", cfg.Server.Port,
+		"tls", cfg.Server.TLSCert != "",
 		"registration_mode", cfg.Registration.Mode,
 		"admin_enabled", cfg.Admin.Password != "",
+		"metrics_strict", cfg.Metrics.Strict,
 		"relay_enabled", cfg.Relay.Enabled,
 		"relay_port", cfg.Relay.Port,
 		"reflector_enabled", cfg.Reflector.Enabled,
+		"snapshot", cfg.Store.SnapshotPath,
 	)
 
-	// 优雅停机编排(kit/shutdown):teardown(取消根 ctx→清扫/反射器/中继退出)
+	// 优雅停机编排(kit/shutdown):teardown(取消根 ctx→清扫/反射器/中继/快照退出)
 	// 先于 http 排水执行;每个资源独立超时预算,panic 隔离不中断剩余清理。
 	mgr := shutdown.New(10 * time.Second)
 	mgr.AddTeardown(stop)
+	if cfg.Store.SnapshotPath != "" {
+		mgr.Add("snapshot", func(context.Context) error {
+			if err := saveSnapshot(memStore, cfg.Store.SnapshotPath); err != nil {
+				logger.Warn("停机快照落盘失败", "path", cfg.Store.SnapshotPath, "err", err)
+			}
+			return nil
+		}, 5*time.Second)
+	}
 	mgr.Add("http", func(ctx context.Context) error { return httpSrv.Shutdown(ctx) }, 10*time.Second)
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -164,6 +219,46 @@ func main() {
 		}
 	}
 	logger.Info("p2pd 已退出")
+}
+
+// saveSnapshot 内存存储 → 快照文件(临时文件+atomic rename,进程任意时刻
+// 被杀都不会留下写了一半的快照)。
+func saveSnapshot(s *memory.Store, path string) error {
+	data, err := s.Snapshot()
+	if err != nil {
+		return fmt.Errorf("序列化: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("写临时文件: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("原子替换: %w", err)
+	}
+	return nil
+}
+
+// restoreSnapshot 从快照文件恢复存储。文件不存在视为首次启动(返回 nil);
+// 损坏由调用方按告警处理——快照只是加速自愈的逃生门,节点会自动重注册。
+func restoreSnapshot(s *memory.Store, path string, log *slog.Logger) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		log.Info("快照文件不存在,以空存储启动(节点将自动重注册)", "path", path)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.Restore(data); err != nil {
+		return err
+	}
+	nodes, announces, err := s.Stats()
+	if err != nil {
+		return err
+	}
+	log.Info("快照已恢复", "path", path, "nodes", nodes, "announces", announces)
+	return nil
 }
 
 // resolveConfigPath 解析配置路径:显式指定 > CONFIG_PATH > 默认位置(存在才用)。

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"log/slog"
@@ -129,7 +130,10 @@ func (s *Server) withMetrics(route string, h http.HandlerFunc) http.HandlerFunc 
 	}
 }
 
-// secureEqual 恒时比较,防管理口令时序侧信道。
+// secureEqual 恒时比较。先对双侧做 SHA-256 再比——ConstantTimeCompare 对
+// 不等长输入会以比较耗时泄露长度,哈希定长化后彻底抹掉该侧信道。
 func secureEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+	ha := sha256.Sum256([]byte(a))
+	hb := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
 }

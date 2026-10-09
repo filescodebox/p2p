@@ -4,6 +4,8 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sync"
 
 	"github.com/pigeonbox/p2p/internal/store"
@@ -121,4 +123,65 @@ func (s *Store) ListAnnounces(_ context.Context) ([]store.Announce, error) {
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// Stats 当前(未过滤过期)条目数,启动日志用。
+func (s *Store) Stats() (nodes, announces int, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.nodes), len(s.announces), nil
+}
+
+// snapshotData 快照文件形态(JSON)。带版本号,未来字段演进可迁移。
+type snapshotData struct {
+	Version   int              `json:"version"`
+	Nodes     []store.Node     `json:"nodes"`
+	Announces []store.Announce `json:"announces"`
+}
+
+const snapshotVersion = 1
+
+// Snapshot 序列化全部内容(含未过期项;过期项恢复后由清扫周期回收)。
+// 与 Restore 成对,供 p2pd 的可选持久化(重启不再有公告失联窗口)。
+func (s *Store) Snapshot() ([]byte, error) {
+	s.mu.RLock()
+	nodes := make([]store.Node, 0, len(s.nodes))
+	for _, n := range s.nodes {
+		nodes = append(nodes, n)
+	}
+	announces := make([]store.Announce, 0, len(s.announces))
+	for _, a := range s.announces {
+		announces = append(announces, a)
+	}
+	s.mu.RUnlock()
+	return json.Marshal(snapshotData{Version: snapshotVersion, Nodes: nodes, Announces: announces})
+}
+
+// Restore 用快照整体替换存储内容。损坏/版本不识别返回错误,调用方决定
+// 回退空存储。过期项照常读入——读路径的 Expired 判定与清扫兜底。
+func (s *Store) Restore(data []byte) error {
+	var sd snapshotData
+	if err := json.Unmarshal(data, &sd); err != nil {
+		return fmt.Errorf("快照解析: %w", err)
+	}
+	if sd.Version != snapshotVersion {
+		return fmt.Errorf("快照版本不识别: %d", sd.Version)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodes = make(map[string]store.Node, len(sd.Nodes))
+	for _, n := range sd.Nodes {
+		if n.ID == "" {
+			continue
+		}
+		s.nodes[n.ID] = n
+	}
+	s.announces = make(map[string]store.Announce, len(sd.Announces))
+	for _, a := range sd.Announces {
+		if a.CodeHash == "" {
+			continue
+		}
+		s.announces[a.CodeHash] = a
+	}
+	return nil
 }

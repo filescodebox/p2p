@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -21,7 +22,33 @@ type Config struct {
 	Signaling    Signaling
 	Relay        Relay
 	Reflector    Reflector
+	Store        Store
+	Metrics      Metrics
 	Log          Log
+	// Warnings Load 阶段的非致命告警(如未识别的配置键),由装配层打日志。
+	// 不属于配置语义,勿序列化进快照/管理端。
+	Warnings []string `json:"-"`
+}
+
+// Server HTTP 服务参数。
+type Server struct {
+	Port         int
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+	// BehindProxy 为 true 时从 X-Forwarded-For 解析客户端 IP(反代部署,如 nginx/openresty);
+	// 默认 false,直取 RemoteAddr,防止伪造头绕过限流。
+	BehindProxy bool
+	// TrustedProxies 可信反代网段(CIDR,逗号分隔,如 "10.0.0.0/8,172.16.0.0/12")。
+	// behind_proxy=true 时仅当直连对端落在可信网段才采信 XFF,且从最右段向左
+	// 跳过可信跳取第一个不可信地址;空 = 信任直连对端(单层反代)。
+	// env: PB_P2P_SERVER_TRUSTED_PROXIES
+	TrustedProxies []string
+	// TLS 证书与私钥路径。两者都非空时 HTTP/WS(信令)以 TLS 提供;
+	// 推荐反代终结 TLS,直连 TLS 用于裸机公网部署。UDP 反射器/中继不受影响。
+	// env: PB_P2P_TLS_CERT / PB_P2P_TLS_KEY
+	TLSCert string
+	TLSKey  string
 }
 
 // Relay 加密中继配置（M3 打洞失败的兜底;默认整机关闭）。
@@ -33,12 +60,40 @@ type Relay struct {
 	Port int
 	// MbpsPerChannel 单信道带宽上限（Mbps,0=不限）。env: PB_P2P_RELAY_MBPS
 	MbpsPerChannel int64
+	// MaxWaiting 等待配对连接数上限(0=内置默认 1024)。
+	// env: PB_P2P_RELAY_MAX_WAITING
+	MaxWaiting int
+	// MaxConnsPerIP 单 IP 并发连接上限(0=内置默认 16;防随机 token 占满
+	// 全局等待槽的拒绝服务,2026-10-05 审计 P2)。
+	// env: PB_P2P_RELAY_MAX_CONNS_PER_IP
+	MaxConnsPerIP int
+	// WaitingTimeout 等待配对超时(0=内置默认 60s)。
+	// env: PB_P2P_RELAY_WAITING_TIMEOUT
+	WaitingTimeout time.Duration
 }
 
 // Reflector UDP 地址反射器（打洞前提;与 HTTP 同端口,默认开）。
 type Reflector struct {
 	// Enabled 总开关。env: PB_P2P_REFLECTOR_ENABLED
 	Enabled bool
+}
+
+// Store 存储与持久化。
+type Store struct {
+	// SnapshotPath 快照文件路径(空=不持久化,纯内存)。设置后周期落盘+
+	// 优雅停机落盘,重启时恢复——公共节点重启不再有公告"失联窗口"。
+	// env: PB_P2P_STORE_SNAPSHOT_PATH
+	SnapshotPath string
+	// SnapshotInterval 快照落盘周期(默认 30s;≤0 用默认)。
+	// env: PB_P2P_STORE_SNAPSHOT_INTERVAL
+	SnapshotInterval time.Duration
+}
+
+// Metrics 观测配置。
+type Metrics struct {
+	// Strict 公共部署加固:未配置管理口令时 /metrics 直接 404 而非默认开放。
+	// env: PB_P2P_METRICS_STRICT
+	Strict bool
 }
 
 // Signaling WS 信令信道配置（M3 设备直传；默认开——准入由节点签名把守，
@@ -58,17 +113,6 @@ type Signaling struct {
 	MaxSessionsPerNode int
 	// MaxTotalSessions 全局并发会话上限。env: PB_P2P_SIGNALING_MAX_TOTAL
 	MaxTotalSessions int
-}
-
-// Server HTTP 服务参数。
-type Server struct {
-	Port         int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
-	// BehindProxy 为 true 时从 X-Forwarded-For 取客户端 IP(反代部署,如 nginx/openresty);
-	// 默认 false,直取 RemoteAddr,防止伪造头绕过限流。
-	BehindProxy bool
 }
 
 // Registration 节点注册策略。
@@ -108,6 +152,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.write_timeout", 30*time.Second)
 	v.SetDefault("server.idle_timeout", 120*time.Second)
 	v.SetDefault("server.behind_proxy", false)
+	v.SetDefault("server.trusted_proxies", "")
+	v.SetDefault("server.tls_cert", "")
+	v.SetDefault("server.tls_key", "")
 	v.SetDefault("registration.mode", "open")
 	v.SetDefault("registration.token", "")
 	v.SetDefault("registration.min_node_ttl", 5*time.Minute)
@@ -132,7 +179,35 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("relay.enabled", false)
 	v.SetDefault("relay.port", 12347)
 	v.SetDefault("relay.mbps_per_channel", 10)
+	v.SetDefault("relay.max_waiting", 1024)
+	v.SetDefault("relay.max_conns_per_ip", 16)
+	v.SetDefault("relay.waiting_timeout", 60*time.Second)
 	v.SetDefault("reflector.enabled", true)
+	// 快照持久化(默认关=纯内存)与 metrics 加固
+	v.SetDefault("store.snapshot_path", "")
+	v.SetDefault("store.snapshot_interval", 30*time.Second)
+	v.SetDefault("metrics.strict", false)
+}
+
+// knownKeys 合法配置键全集(与 setDefaults 一一对应;Load 未知键告警消费)。
+var knownKeys = map[string]bool{
+	"server.port": true, "server.read_timeout": true, "server.write_timeout": true,
+	"server.idle_timeout": true, "server.behind_proxy": true, "server.trusted_proxies": true,
+	"server.tls_cert": true, "server.tls_key": true,
+	"registration.mode": true, "registration.token": true,
+	"registration.min_node_ttl": true, "registration.max_node_ttl": true,
+	"registration.max_nodes": true,
+	"announce.max_per_node":  true, "announce.max_ttl": true, "announce.max_total": true,
+	"admin.password": true, "log.level": true,
+	"signaling.enabled": true, "signaling.session_ttl": true, "signaling.idle_timeout": true,
+	"signaling.hello_timeout": true, "signaling.ping_period": true, "signaling.write_wait": true,
+	"signaling.max_frame_bytes": true, "signaling.max_sessions_per_node": true,
+	"signaling.max_total_sessions": true,
+	"relay.enabled":                true, "relay.port": true, "relay.mbps_per_channel": true,
+	"relay.max_waiting": true, "relay.max_conns_per_ip": true, "relay.waiting_timeout": true,
+	"reflector.enabled":   true,
+	"store.snapshot_path": true, "store.snapshot_interval": true,
+	"metrics.strict": true,
 }
 
 // Load 读取配置。path 为空时仅用默认值+环境变量。
@@ -158,16 +233,25 @@ func Load(path string) (*Config, error) {
 			WriteTimeout: v.GetDuration("server.write_timeout"),
 			IdleTimeout:  v.GetDuration("server.idle_timeout"),
 			BehindProxy:  v.GetBool("server.behind_proxy"),
+			// 配置文件写 YAML 列表或 env 写逗号分隔均可:GetString 对 YAML 列表
+			// 返回 "[a b]" 形式,splitProxies 两种形态都拆得开
+			TrustedProxies: splitProxies(v.GetString("server.trusted_proxies")),
+			TLSCert:        v.GetString("server.tls_cert"),
+			TLSKey:         v.GetString("server.tls_key"),
 		},
 		Registration: Registration{
 			Mode:       v.GetString("registration.mode"),
 			Token:      v.GetString("registration.token"),
 			MinNodeTTL: v.GetDuration("registration.min_node_ttl"),
 			MaxNodeTTL: v.GetDuration("registration.max_node_ttl"),
+			// 2026-10-09 修复:此前 defaults 里设了值但 Load 漏读,配置不生效
+			// (靠 registry.Service 的内置默认兜底恰好同值才没出事故)
+			MaxNodes: v.GetInt("registration.max_nodes"),
 		},
 		Announce: Announce{
 			MaxPerNode: v.GetInt("announce.max_per_node"),
 			MaxTTL:     v.GetDuration("announce.max_ttl"),
+			MaxTotal:   v.GetInt("announce.max_total"),
 		},
 		Admin: Admin{
 			Password: v.GetString("admin.password"),
@@ -185,13 +269,29 @@ func Load(path string) (*Config, error) {
 			Enabled:        v.GetBool("relay.enabled"),
 			Port:           v.GetInt("relay.port"),
 			MbpsPerChannel: v.GetInt64("relay.mbps_per_channel"),
+			MaxWaiting:     v.GetInt("relay.max_waiting"),
+			MaxConnsPerIP:  v.GetInt("relay.max_conns_per_ip"),
+			WaitingTimeout: v.GetDuration("relay.waiting_timeout"),
 		},
 		Reflector: Reflector{
 			Enabled: v.GetBool("reflector.enabled"),
 		},
+		Store: Store{
+			SnapshotPath:     v.GetString("store.snapshot_path"),
+			SnapshotInterval: v.GetDuration("store.snapshot_interval"),
+		},
+		Metrics: Metrics{
+			Strict: v.GetBool("metrics.strict"),
+		},
 		Log: Log{
 			Level: v.GetString("log.level"),
 		},
+	}
+	// 未知键告警(P2-9):viper 对拼错的键静默走默认值,是运营事故源
+	for _, k := range v.AllKeys() {
+		if !knownKeys[k] {
+			c.Warnings = append(c.Warnings, "未识别的配置键(将忽略,检查拼写): "+k)
+		}
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -199,9 +299,29 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
+// splitProxies 解析可信代理网段列表:env 的逗号分隔串 / YAML 列表的
+// "[a b]" 串两种形态均支持;空白项丢弃。
+func splitProxies(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "[")
+	raw = strings.TrimSuffix(raw, "]")
+	var out []string
+	for _, p := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (c *Config) validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port 非法: %d", c.Server.Port)
+	}
+	for _, p := range c.Server.TrustedProxies {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(p)); err != nil {
+			return fmt.Errorf("server.trusted_proxies 项非法(须 CIDR): %q", p)
+		}
 	}
 	switch c.Registration.Mode {
 	case "open", "token":
@@ -239,6 +359,14 @@ func (c *Config) validate() error {
 		if c.Relay.MbpsPerChannel < 0 {
 			return fmt.Errorf("relay.mbps_per_channel 非法: %d", c.Relay.MbpsPerChannel)
 		}
+		if c.Relay.MaxWaiting < 0 || c.Relay.MaxConnsPerIP < 0 || c.Relay.WaitingTimeout < 0 {
+			return fmt.Errorf("relay 容量参数不可为负: max_waiting=%d max_conns_per_ip=%d waiting_timeout=%s",
+				c.Relay.MaxWaiting, c.Relay.MaxConnsPerIP, c.Relay.WaitingTimeout)
+		}
+	}
+	// TLS:要么都配要么都不配;证书文件存在性由启动时加载报错(此处只查形态)
+	if (c.Server.TLSCert == "") != (c.Server.TLSKey == "") {
+		return fmt.Errorf("server.tls_cert 与 server.tls_key 必须同时设置(或同时留空走明文)")
 	}
 	return nil
 }
