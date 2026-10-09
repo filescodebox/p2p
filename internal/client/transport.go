@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -27,6 +28,24 @@ import (
 // ---- 传输建立：打洞成功走 QUIC(打洞套接字),失败走中继 TCP ----
 
 const quicALPN = "fcb-p2p/1"
+
+// xport 传输承载:控制流(握手/元数据/收尾) + 数据流工厂(v3 多流并行,
+// 仅 QUIC 直传路径;中继单管道 open/accept 为 nil,数据全部走控制流)。
+type xport struct {
+	ctrl *wire.Conn
+	// open/accept 打开/接受第 i 条数据流。数据流用独立派生密钥(data-seg<i>)
+	// ——各流 AEAD 序号都从 0 起算,同密钥会跨流 nonce 重用。QUIC 的
+	// AcceptStream 顺序与 OpenStreamSync 顺序一致(stream id 单调),两侧
+	// 按同序号派生即配对。
+	open   func(ctx context.Context, seg int) (*wire.Conn, error)
+	accept func(ctx context.Context, seg int) (*wire.Conn, error)
+	// direct 是否 QUIC 直传(多流可用)。
+	direct  bool
+	cleanup func()
+}
+
+// segKeyLabel 第 i 条数据流的派生标签。
+func segKeyLabel(i int) string { return "data-seg-" + strconv.Itoa(i) }
 
 // relayToken 由会话密钥派生的中继信道凭据（无口令不可计算;窃取仅构成 DoS——
 // 传输层首帧 AEAD 认证,攻击者产不出合法帧）。
@@ -79,8 +98,8 @@ func verifyFP(want string) func(rawCerts [][]byte, _ [][]*x509.Certificate) erro
 // establishQUIC 在打洞成功的 UDP 套接字上建立 QUIC 传输。
 // sender 作为服务端监听;receiver 拨号 punch 验证过的对端地址。
 // 套接字交给 quic.Transport 后不得再用于原始读写(打洞循环须已停止)。
-// 返回消息化连接与清理函数。
-func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool) (*wire.Conn, func(), error) {
+// 返回控制流 + 数据流工厂(v3 多流)与清理函数。
+func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool) (*xport, error) {
 	tlsBase := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{quicALPN},
@@ -117,57 +136,78 @@ func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peer
 	opCtx, opCancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer opCancel()
 	var stream *quic.Stream
+	var qc *quic.Conn
 	if isSender {
 		ln, err := tr.Listen(tlsBase, qcfg)
 		if err != nil {
-			return nil, nil, fmt.Errorf("quic 监听: %w", err)
+			_ = tr.Close()
+			return nil, fmt.Errorf("quic 监听: %w", err)
 		}
-		qc, err := ln.Accept(opCtx)
+		qc, err = ln.Accept(opCtx)
 		if err != nil {
 			_ = tr.Close()
-			return nil, nil, fmt.Errorf("quic 接受连接: %w", err)
+			return nil, fmt.Errorf("quic 接受连接: %w", err)
 		}
 		stream, err = qc.OpenStreamSync(opCtx)
 		if err != nil {
 			_ = tr.Close()
-			return nil, nil, fmt.Errorf("quic 打开流: %w", err)
+			return nil, fmt.Errorf("quic 打开流: %w", err)
 		}
 	} else {
-		qc, err := tr.Dial(opCtx, remote, tlsBase, qcfg)
+		var err error
+		qc, err = tr.Dial(opCtx, remote, tlsBase, qcfg)
 		if err != nil {
 			_ = tr.Close()
-			return nil, nil, fmt.Errorf("quic 拨号: %w", err)
+			return nil, fmt.Errorf("quic 拨号: %w", err)
 		}
 		stream, err = qc.AcceptStream(opCtx)
 		if err != nil {
 			_ = tr.Close()
-			return nil, nil, fmt.Errorf("quic 接受流: %w", err)
+			return nil, fmt.Errorf("quic 接受流: %w", err)
 		}
 	}
-	w, err := wire.New(stream, wire.DeriveKey(session, "data"), isSender)
+	ctrl, err := wire.New(stream, wire.DeriveKey(session, "data"), isSender)
 	if err != nil {
 		_ = tr.Close()
-		return nil, nil, err
+		return nil, err
 	}
-	return w, func() { _ = tr.Close() }, nil
+	x := &xport{ctrl: ctrl, direct: true, cleanup: func() { _ = tr.Close() }}
+	if isSender {
+		x.open = func(ctx context.Context, seg int) (*wire.Conn, error) {
+			st, err := qc.OpenStreamSync(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("quic 打开数据流 seg%d: %w", seg, err)
+			}
+			return wire.New(st, wire.DeriveKey(session, segKeyLabel(seg)), true)
+		}
+	} else {
+		x.accept = func(ctx context.Context, seg int) (*wire.Conn, error) {
+			st, err := qc.AcceptStream(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("quic 接受数据流 seg%d: %w", seg, err)
+			}
+			return wire.New(st, wire.DeriveKey(session, segKeyLabel(seg)), false)
+		}
+	}
+	return x, nil
 }
 
 // establishRelay 经中继建立传输：TCP 接入 + 令牌配对 + AEAD 消息帧。
 // 首帧即完成认证(无口令者产不出合法帧)。isSender 用于 AEAD 方向标签
-// （nonce 空间分离，防跨方向 nonce 重用）。
-func establishRelay(session []byte, relayAddr, token string, isSender bool) (*wire.Conn, func(), error) {
+// （nonce 空间分离，防跨方向 nonce 重用）。中继为单管道:数据全部走控制流。
+func establishRelay(session []byte, relayAddr, token string, isSender bool) (*xport, error) {
 	tcp, err := net.DialTimeout("tcp", relayAddr, 10*time.Second)
 	if err != nil {
-		return nil, nil, fmt.Errorf("中继接入: %w", err)
+		return nil, fmt.Errorf("中继接入: %w", err)
 	}
 	if _, err := tcp.Write([]byte("RELAY " + token + "\n")); err != nil {
 		_ = tcp.Close()
-		return nil, nil, fmt.Errorf("中继令牌发送: %w", err)
+		return nil, fmt.Errorf("中继令牌发送: %w", err)
 	}
-	w, err := wire.New(tcp, wire.DeriveKey(session, "data"), isSender)
+	ctrl, err := wire.New(tcp, wire.DeriveKey(session, "data"), isSender)
 	if err != nil {
 		_ = tcp.Close()
-		return nil, nil, err
+		return nil, err
 	}
-	return w, func() { _ = tcp.Close() }, nil
+	return &xport{ctrl: ctrl, cleanup: func() { _ = tcp.Close() }}, nil
 }

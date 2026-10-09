@@ -242,6 +242,46 @@ func TestSendRecvResumeFromPartial(t *testing.T) {
 	assertSameFile(t, src, out)
 }
 
+// TestSendRecvMultiStreamDirect v3 多流并行路径回环 e2e:文件 ≥8MB 阈值
+// 触发 QUIC 直传多流(plan/seg 分段+WriteAt 定位写+全量 sha256)。
+// 同时覆盖显式版本协商(v3 双端握手)。
+func TestSendRecvMultiStreamDirect(t *testing.T) {
+	f := newFixture(t, false)
+	code, _ := GenerateCode()
+	sendDir := t.TempDir()
+	recvDir := t.TempDir()
+	src := randomFile(t, sendDir, "multi-stream.bin", 8<<20) // 恰在多流阈值上
+
+	so := testOpts(f, "send")
+	so.PunchBudget = 6 * time.Second
+	errCh := make(chan error, 1)
+	go func() {
+		c, err := New(so)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		_, err = c.Send(src, code)
+		errCh <- err
+	}()
+
+	waitForAnnounce(t, f.base, code)
+	ro := testOpts(f, "recv")
+	ro.PunchBudget = 6 * time.Second
+	c, err := New(ro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := c.Receive(code, recvDir)
+	if err != nil {
+		t.Fatalf("接收: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("发送: %v", err)
+	}
+	assertSameFile(t, src, out)
+}
+
 // ---- 小件 ----
 
 func assertSameFile(t *testing.T, want, got string) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"net"
@@ -124,7 +125,8 @@ func (c *Client) setupNode() func() {
 	}
 }
 
-// resolveRetry 解析带重试:500ms 间隔,超过 wait 后以最后一次错误返回。
+// resolveRetry 解析带重试:500ms 基准间隔(±20% 抖动,多接收方并发等公告
+// 时不至于齐步冲击注册中心),超过 wait 后以最后一次错误返回。
 func (c *Client) resolveRetry(code string, wait time.Duration) (string, error) {
 	deadline := time.Now().Add(wait)
 	for {
@@ -135,11 +137,24 @@ func (c *Client) resolveRetry(code string, wait time.Duration) (string, error) {
 			return id, nil
 		}
 		if !time.Now().After(deadline) {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(jitterDur(500*time.Millisecond, 0.2))
 			continue
 		}
 		return "", fmt.Errorf("解析: %w", err)
 	}
+}
+
+// jitterDur d±d*jitter 的随机时长(抖动防雷群)。
+func jitterDur(d time.Duration, jitter float64) time.Duration {
+	if jitter <= 0 {
+		return d
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return d
+	}
+	frac := 1 - jitter + 2*jitter*(float64(binary.BigEndian.Uint64(b[:]))/float64(1<<64-1))
+	return time.Duration(float64(d) * frac)
 }
 
 // progress 每 1MB 打一条进度日志。
@@ -177,6 +192,11 @@ func (c *Client) Send(path string, code string) (string, error) {
 		return "", err
 	}
 	defer ch.close()
+	c.log.Info("对端已接入,协商协议版本")
+
+	if err := negotiateVersion(ch); err != nil {
+		return code, err
+	}
 	c.log.Info("对端已接入,开始 PAKE")
 
 	session, err := runPake([]byte(code), true, ch.exchange())
@@ -204,14 +224,14 @@ func (c *Client) Send(path string, code string) (string, error) {
 		return code, err
 	}
 
-	w, cleanup, via, err := c.establish(sock, session, cert, peer.CertFP, peer, true)
+	x, via, err := c.establish(sock, session, cert, peer.CertFP, peer, true)
 	if err != nil {
 		return code, err
 	}
-	defer cleanup()
+	defer x.cleanup()
 	c.log.Info("传输通道建立", "via", via)
 
-	if err := sendFile(w, path, c.progress()); err != nil {
+	if err := sendFile(x, path, c.progress()); err != nil {
 		return code, err
 	}
 	c.log.Info("发送完成", "code", code)
@@ -239,7 +259,12 @@ func (c *Client) Receive(code, dir string) (string, error) {
 	if ch.peerID != senderID {
 		return "", fmt.Errorf("身份核对失败: 信道对端 %s ≠ 公告节点 %s", ch.peerID, senderID)
 	}
-	c.log.Info("已配对且身份核对通过,开始 PAKE")
+	c.log.Info("已配对且身份核对通过,协商协议版本")
+
+	if err := negotiateVersion(ch); err != nil {
+		return "", err
+	}
+	c.log.Info("开始 PAKE")
 
 	session, err := runPake([]byte(code), false, ch.exchange())
 	if err != nil {
@@ -265,14 +290,14 @@ func (c *Client) Receive(code, dir string) (string, error) {
 		return "", err
 	}
 
-	w, cleanup, via, err := c.establish(sock, session, cert, peer.CertFP, peer, false)
+	x, via, err := c.establish(sock, session, cert, peer.CertFP, peer, false)
 	if err != nil {
 		return "", err
 	}
-	defer cleanup()
+	defer x.cleanup()
 	c.log.Info("传输通道建立", "via", via)
 
-	out, err := recvFile(w, dir, c.progress())
+	out, err := recvFile(x, dir, c.progress())
 	if err != nil {
 		return "", err
 	}
@@ -283,15 +308,15 @@ func (c *Client) Receive(code, dir string) (string, error) {
 // establish 打洞(可跳过)→ QUIC over 打洞套接字;失败 → 中继 TCP。
 // 成功走 QUIC 时套接字所有权移交 transport(cleanup 负责关闭);
 // 打洞失败即当场关闭套接字回退中继。
-func (c *Client) establish(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, peer *candInfo, isSender bool) (*wire.Conn, func(), string, error) {
+func (c *Client) establish(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, peer *candInfo, isSender bool) (*xport, string, error) {
 	if !c.opt.DisablePunch && (peer.UDPPublic != "" || len(peer.UDPLAN) > 0) {
 		remote, perr := punch(sock, peer, wire.DeriveKey(session, "cand"), c.opt.PunchBudget)
 		if perr == nil {
 			// punch 留下的读 deadline 必须清除,否则移交 QUIC 后到期会杀掉连接
 			_ = sock.SetReadDeadline(time.Time{})
-			w, cleanup, qerr := establishQUIC(sock, session, cert, peerFP, remote, isSender)
+			x, qerr := establishQUIC(sock, session, cert, peerFP, remote, isSender)
 			if qerr == nil {
-				return w, cleanup, "quic-direct", nil
+				return x, "quic-direct", nil
 			}
 			c.log.Warn("QUIC 建立失败,回退中继", "err", qerr)
 		} else {
@@ -303,11 +328,11 @@ func (c *Client) establish(sock *net.UDPConn, session []byte, cert tls.Certifica
 		c.log.Info("对端无 UDP 候选,走中继")
 	}
 	_ = sock.Close() // 打洞路径未采用,套接字交还系统
-	w, cleanup, rerr := establishRelay(session, c.relayAddr(), relayToken(session), isSender)
+	x, rerr := establishRelay(session, c.relayAddr(), relayToken(session), isSender)
 	if rerr != nil {
-		return nil, nil, "", fmt.Errorf("打洞失败且中继不可用: %w", rerr)
+		return nil, "", fmt.Errorf("打洞失败且中继不可用: %w", rerr)
 	}
-	return w, cleanup, "relay", nil
+	return x, "relay", nil
 }
 
 // ---- 小件 ----

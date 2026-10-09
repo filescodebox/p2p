@@ -88,16 +88,16 @@ func New(ctx context.Context, p Params) *Server {
 		}, p.Service, m)
 	}
 	return &Server{
-		svc:        p.Service,
-		cfg:        p.Config,
-		log:        log,
-		metrics:    m,
-		version:    p.Version,
-		hub:        hub,
-		resolveLim: newKeyedLimiter(ctx, 1, 120),      // resolve: 平均 1/s 突发 120
-		writeLim:   newKeyedLimiter(ctx, 2, 120),      // 写路径: 平均 2/s 突发 120
-		adminLim:   newKeyedLimiter(ctx, 10, 60),      // 管理端宽松
-		resolveHashLim: newKeyedLimiter(ctx, 10, 60),  // 单 hash: 平均 10/s(正常取件重试 2/s×多接收方余量)
+		svc:            p.Service,
+		cfg:            p.Config,
+		log:            log,
+		metrics:        m,
+		version:        p.Version,
+		hub:            hub,
+		resolveLim:     newKeyedLimiter(ctx, 1, 120), // resolve: 平均 1/s 突发 120
+		writeLim:       newKeyedLimiter(ctx, 2, 120), // 写路径: 平均 2/s 突发 120
+		adminLim:       newKeyedLimiter(ctx, 10, 60), // 管理端宽松
+		resolveHashLim: newKeyedLimiter(ctx, 10, 60), // 单 hash: 平均 10/s(正常取件重试 2/s×多接收方余量)
 	}
 }
 
