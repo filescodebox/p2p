@@ -5,6 +5,7 @@ package main
 // 回环部署下校验 Host 头防 DNS rebinding；无 CORS 头（同源才可读）。
 
 import (
+	"archive/zip"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -14,12 +15,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pigeonbox/kit/version"
@@ -40,6 +41,92 @@ type Server struct {
 	noPunch   bool   // 透传子模式禁用打洞（默认 false；测试确定性用）
 	cfg       *cfgStore
 	mgr       *Manager
+	shares    *shareTable
+}
+
+// shareTable 浏览器直下分享:一次性令牌链接,15 分钟过期,上限 4 个在席。
+// 独立于主令牌门禁(对端浏览器拿不到 p2pcweb 令牌);链接即凭据,仅限
+// 可信网络分享。多文件/目录以 zip 流式响应(边打边发,不落盘)。
+type shareTable struct {
+	mu    sync.Mutex
+	items map[string]*share // id → share
+}
+
+type share struct {
+	id      string
+	token   string
+	name    string
+	path    string // 单文件路径或组目录
+	isDir   bool
+	expires time.Time
+}
+
+const (
+	shareTTL       = 15 * time.Minute
+	shareMaxActive = 4
+)
+
+func newShareTable() *shareTable { return &shareTable{items: map[string]*share{}} }
+
+func (t *shareTable) add(name, path string, isDir bool) (*share, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// 过期清扫
+	now := time.Now()
+	for id, sh := range t.items {
+		if now.After(sh.expires) {
+			delete(t.items, id)
+		}
+	}
+	if len(t.items) >= shareMaxActive {
+		return nil, errors.New("在席分享已达上限(4),请先取消旧的")
+	}
+	id, err := newToken()
+	if err != nil {
+		return nil, err
+	}
+	tok, err := newToken()
+	if err != nil {
+		return nil, err
+	}
+	sh := &share{id: id, token: tok, name: name, path: path, isDir: isDir, expires: now.Add(shareTTL)}
+	t.items[id] = sh
+	return sh, nil
+}
+
+func (t *shareTable) get(id, token string) *share {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sh := t.items[id]
+	if sh == nil || !secureEqual(token, sh.token) || time.Now().After(sh.expires) {
+		return nil
+	}
+	return sh
+}
+
+func (t *shareTable) drop(id string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.items[id]; !ok {
+		return false
+	}
+	delete(t.items, id)
+	return true
+}
+
+func (t *shareTable) list() []share {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]share, 0, len(t.items))
+	now := time.Now()
+	for id, sh := range t.items {
+		if now.After(sh.expires) {
+			delete(t.items, id)
+			continue
+		}
+		out = append(out, *sh)
+	}
+	return out
 }
 
 func newToken() (string, error) {
@@ -120,6 +207,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/recv", s.guard(s.handleRecv))
 	mux.HandleFunc("/api/cancel", s.guard(s.handleCancel))
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
+	mux.HandleFunc("POST /api/share", s.guard(s.handleShare))
+	mux.HandleFunc("GET /api/shares", s.guard(s.handleShareList))
+	mux.HandleFunc("POST /api/share/cancel", s.guard(s.handleShareCancel))
+	mux.HandleFunc("GET /d/{id}", s.handleDownload) // 独立令牌门禁(对端浏览器无主令牌)
 	return mux
 }
 
@@ -198,66 +289,93 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "需要 multipart 文件表单")
 		return
 	}
-	var part *multipart.Part
-	for {
-		p, err := mr.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "表单解析失败")
-			return
-		}
-		if p.FormName() == "file" {
-			part = p
-			break
-		}
-		_ = p.Close()
-	}
-	if part == nil {
-		writeErr(w, http.StatusBadRequest, "缺少 file 字段")
-		return
-	}
-
 	tmpDir, err := os.MkdirTemp("", "p2pcweb-upload-")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "临时目录创建失败: "+err.Error())
 		return
 	}
-	dest := filepath.Join(tmpDir, sanitizeName(part.FileName()))
-	f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		writeErr(w, http.StatusInternalServerError, "临时文件创建失败: "+err.Error())
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
+
+	// 多文件:收齐全部 file part;单文件直发(原名),多文件归组到
+	// 「PigeonBox 共享 <时间>」目录(对端 manifest 呈现组名/相对路径)。
+	var saved int
+	var single string
+	for {
+		part, perr := mr.NextPart()
+		if errors.Is(perr, io.EOF) {
+			break
+		}
+		if perr != nil {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "表单解析失败")
+			return
+		}
+		if part.FormName() != "file" {
+			_ = part.Close()
+			continue
+		}
+		dest := filepath.Join(tmpDir, sanitizeName(part.FileName()))
+		f, ferr := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if ferr != nil {
+			cleanup()
+			writeErr(w, http.StatusInternalServerError, "临时文件创建失败: "+ferr.Error())
+			return
+		}
+		n, cerr := io.Copy(f, part)
+		fClose := f.Close()
+		_ = part.Close()
+		if cerr != nil || fClose != nil {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "上传读取失败")
+			return
+		}
+		if n > s.maxUpload {
+			cleanup()
+			writeErr(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("文件超过上限 %d 字节（--max-upload 可调）", s.maxUpload))
+			return
+		}
+		if n == 0 {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "空文件: "+part.FileName())
+			return
+		}
+		saved++
+		single = dest
+	}
+	if saved == 0 {
+		cleanup()
+		writeErr(w, http.StatusBadRequest, "缺少 file 字段")
 		return
 	}
-	n, err := io.Copy(f, part)
-	closeErr := f.Close()
-	_ = part.Close()
-	if err != nil || closeErr != nil {
-		_ = os.RemoveAll(tmpDir)
-		writeErr(w, http.StatusBadRequest, "上传读取失败")
-		return
-	}
-	if n > s.maxUpload {
-		_ = os.RemoveAll(tmpDir)
-		writeErr(w, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("文件超过上限 %d 字节（--max-upload 可调）", s.maxUpload))
-		return
-	}
-	if n == 0 {
-		_ = os.RemoveAll(tmpDir)
-		writeErr(w, http.StatusBadRequest, "空文件")
-		return
+	dest := single
+	if saved > 1 {
+		group := filepath.Join(tmpDir, "PigeonBox 共享 "+time.Now().Format("01-02 15:04"))
+		if err := os.Mkdir(group, 0o700); err != nil {
+			cleanup()
+			writeErr(w, http.StatusInternalServerError, "组目录创建失败: "+err.Error())
+			return
+		}
+		entries, _ := os.ReadDir(tmpDir)
+		for _, en := range entries {
+			if en.IsDir() {
+				continue
+			}
+			if err := os.Rename(filepath.Join(tmpDir, en.Name()), filepath.Join(group, en.Name())); err != nil {
+				cleanup()
+				writeErr(w, http.StatusInternalServerError, "归组失败: "+err.Error())
+				return
+			}
+		}
+		dest = group
 	}
 
 	code, err := client.GenerateCode()
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		cleanup()
 		writeErr(w, http.StatusInternalServerError, "口令生成失败: "+err.Error())
 		return
 	}
-	cleanup := func() { _ = os.RemoveAll(tmpDir) }
 	if err := s.mgr.Start("send", registry, code, dest, "", s.relay, s.noPunch, cleanup); err != nil {
 		cleanup()
 		writeErr(w, http.StatusConflict, err.Error())
@@ -290,6 +408,177 @@ func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"ok": "1"})
+}
+
+// handleShare 创建浏览器直下分享(multipart 与 handleSend 同构,无需注册中心)。
+func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxUpload*4+(1<<20))
+	mr, err := r.MultipartReader()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "需要 multipart 文件表单")
+		return
+	}
+	tmpDir, err := os.MkdirTemp("", "p2pcweb-share-")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "临时目录创建失败: "+err.Error())
+		return
+	}
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
+	var saved int
+	var single string
+	singleName := ""
+	for {
+		part, perr := mr.NextPart()
+		if errors.Is(perr, io.EOF) {
+			break
+		}
+		if perr != nil {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "表单解析失败")
+			return
+		}
+		if part.FormName() != "file" {
+			_ = part.Close()
+			continue
+		}
+		dest := filepath.Join(tmpDir, sanitizeName(part.FileName()))
+		f, ferr := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if ferr != nil {
+			cleanup()
+			writeErr(w, http.StatusInternalServerError, "临时文件创建失败: "+ferr.Error())
+			return
+		}
+		n, cerr := io.Copy(f, part)
+		fClose := f.Close()
+		_ = part.Close()
+		if cerr != nil || fClose != nil {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "上传读取失败")
+			return
+		}
+		if n > s.maxUpload {
+			cleanup()
+			writeErr(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("文件超过上限 %d 字节（--max-upload 可调）", s.maxUpload))
+			return
+		}
+		if n == 0 {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "空文件: "+part.FileName())
+			return
+		}
+		saved++
+		single, singleName = dest, part.FileName()
+	}
+	if saved == 0 {
+		cleanup()
+		writeErr(w, http.StatusBadRequest, "缺少 file 字段")
+		return
+	}
+	name := singleName
+	path := single
+	isDir := false
+	if saved > 1 {
+		name = "PigeonBox 共享 " + time.Now().Format("01-02 15:04") + ".zip"
+		path = tmpDir
+		isDir = true
+	}
+	sh, err := s.shares.add(name, path, isDir)
+	if err != nil {
+		cleanup()
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	go func() {
+		// 过期后清理临时目录(shares 表过期惰性清扫;临时目录按 TTL+1min 兜底)
+		time.Sleep(shareTTL + time.Minute)
+		_ = os.RemoveAll(tmpDir)
+	}()
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id": sh.id, "url": "/d/" + sh.id + "?t=" + sh.token,
+		"name": name, "expires": sh.expires.Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleShareList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"shares": s.shares.list()})
+}
+
+func (s *Server) handleShareCancel(w http.ResponseWriter, r *http.Request) {
+	var in struct{ ID string }
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&in); err != nil || in.ID == "" {
+		writeErr(w, http.StatusBadRequest, "请求体非法")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": s.shares.drop(in.ID)})
+}
+
+// handleDownload 浏览器直下端点:share 令牌门禁(恒时比较),单文件
+// ServeContent(天然支持 Range 断点),目录 zip 流式(边压边发)。
+func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sh := s.shares.get(id, r.URL.Query().Get("t"))
+	if sh == nil {
+		http.Error(w, "404：链接无效或已过期", http.StatusNotFound)
+		return
+	}
+	if !sh.isDir {
+		f, err := os.Open(sh.path)
+		if err != nil {
+			http.Error(w, "文件已不可用", http.StatusGone)
+			return
+		}
+		defer func() { _ = f.Close() }()
+		w.Header().Set("Content-Disposition",
+			`attachment; filename*=UTF-8''`+mimeEscape(sh.name))
+		http.ServeContent(w, r, sh.name, time.Now(), f)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename*=UTF-8''`+mimeEscape(sh.name))
+	zw := zip.NewWriter(w)
+	defer func() { _ = zw.Close() }()
+	_ = filepath.WalkDir(sh.path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(sh.path, p)
+		if rerr != nil {
+			return nil
+		}
+		f, oerr := os.Open(p)
+		if oerr != nil {
+			return nil
+		}
+		defer func() { _ = f.Close() }()
+		hdr := &zip.FileHeader{Name: filepath.ToSlash(rel), Method: zip.Deflate, Modified: time.Now()}
+		fw, zerr := zw.CreateHeader(hdr)
+		if zerr != nil {
+			return zerr
+		}
+		_, _ = io.Copy(fw, f)
+		return nil
+	})
+}
+
+// mimeEscape RFC 5987 filename* 转义(UTF-8 百分号编码)。
+func mimeEscape(name string) string {
+	const hexdig = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			strings.IndexByte("-_.!~*'()", c) >= 0:
+			b.WriteByte(c)
+		default:
+			b.WriteByte('%')
+			b.WriteByte(hexdig[c>>4])
+			b.WriteByte(hexdig[c&0xf])
+		}
+	}
+	return "UTF-8''" + b.String()
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, _ *http.Request) {

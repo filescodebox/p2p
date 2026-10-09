@@ -78,6 +78,16 @@
     <div class="err" id="cab-err"></div>
 
     <hr class="divider" />
+    <div class="sec-title">浏览器直下（链接发给同网的人，浏览器打开即下载，15 分钟有效）</div>
+    <div class="row">
+      <button class="ghost" id="pick-share">选择文件生成链接…</button>
+      <button class="ghost" id="refresh-shares">刷新列表</button>
+    </div>
+    <div class="err" id="share-err"></div>
+    <div id="share-list" style="text-align:left; font-size:12px; margin-top:6px; line-height:1.8;"></div>
+    <input type="file" id="file-share" multiple style="display:none" />
+
+    <hr class="divider" />
     <div class="sec-title">设备直传（P2P，经中继/打洞，服务端只见密文）</div>
 
     <input id="registry" placeholder="直传注册中心地址，如 http://p2p.example.com:12346" />
@@ -96,7 +106,7 @@
     <p class="tip" id="p2p-note">发送先取文件到本机临时目录再开始直传；需要可达的 p2pd 注册中心。接收落盘：<span id="out-dir"></span></p>
   </div>
 
-  <input type="file" id="file" style="display:none" />
+  <input type="file" id="file" multiple style="display:none" />
 
   <script>
     // 令牌治理：入口 URL 的 ?t= 只在首屏出现一次——读入 sessionStorage 后
@@ -196,15 +206,16 @@
 
     $('pick').onclick = () => $('file').click();
     $('file').onchange = async () => {
-      const f = $('file').files[0];
+      const files = Array.from($('file').files);
       $('file').value = '';
-      if (!f) return;
+      if (!files.length) return;
       resetP2p();
       const registry = $('registry').value.trim();
       if (!registry) { $('p2p-err').textContent = '请填写直传注册中心地址'; return; }
       const fd = new FormData();
-      fd.append('file', f, f.name);
-      $('p2p-err').textContent = '正在取文件到本机（' + f.name + '）…';
+      for (const f of files) fd.append('file', f, f.name);
+      const label = files.length === 1 ? files[0].name : files.length + ' 个文件';
+      $('p2p-err').textContent = '正在取文件到本机（' + label + '）…';
       try {
         const r = await fetch(api('send?registry=' + encodeURIComponent(registry)), { method: 'POST', headers: auth(), body: fd });
         const data = await r.json().catch(() => ({}));
@@ -232,6 +243,55 @@
     $('cancel').onclick = async () => {
       try { await fetch(api('cancel'), { method: 'POST', headers: auth() }); } catch (_) {}
     };
+
+    // ── 浏览器直下 ──
+    $('pick-share').onclick = () => $('file-share').click();
+    $('file-share').onchange = async () => {
+      const files = Array.from($('file-share').files);
+      $('file-share').value = '';
+      if (!files.length) return;
+      $('share-err').textContent = '正在生成链接…';
+      const fd = new FormData();
+      for (const f of files) fd.append('file', f, f.name);
+      try {
+        const r = await fetch(api('share'), { method: 'POST', headers: auth(), body: fd });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        $('share-err').textContent = '';
+        await refreshShares();
+      } catch (e) {
+        $('share-err').textContent = String(e.message || e);
+      }
+    };
+    $('refresh-shares').onclick = () => refreshShares();
+    async function refreshShares() {
+      try {
+        const r = await fetch(api('shares'), { headers: auth() });
+        const data = await r.json();
+        const el = $('share-list');
+        const items = data.shares || [];
+        if (!items.length) { el.innerHTML = '<span style="opacity:.6">暂无在席分享</span>'; return; }
+        el.innerHTML = '';
+        for (const sh of items) {
+          const row = document.createElement('div');
+          const url = location.origin + sh.url;
+          const a = document.createElement('a');
+          a.href = url; a.textContent = sh.name; a.target = '_blank';
+          const copy = document.createElement('button');
+          copy.className = 'ghost'; copy.textContent = '复制链接'; copy.style.cssText = 'padding:2px 8px;font-size:11px;margin-left:8px;';
+          copy.onclick = () => { navigator.clipboard && navigator.clipboard.writeText(url); };
+          const del = document.createElement('button');
+          del.className = 'ghost'; del.textContent = '取消'; del.style.cssText = 'padding:2px 8px;font-size:11px;margin-left:6px;';
+          del.onclick = async () => {
+            await fetch(api('share/cancel'), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth()), body: JSON.stringify({ id: sh.id }) });
+            refreshShares();
+          };
+          row.appendChild(a); row.appendChild(copy); row.appendChild(del);
+          el.appendChild(row);
+        }
+      } catch (_) {}
+    }
+    refreshShares();
 
     function showCode(code) {
       const el = $('p2p-mycode');

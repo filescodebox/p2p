@@ -1,7 +1,13 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"io"
+	"net"
 	"net/http"
+	"mime/multipart"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -98,3 +104,66 @@ func TestHandleSendValidation(t *testing.T) {
 		t.Fatalf("非 multipart 期望 400, got %d", w.Code)
 	}
 }
+
+// TestShareDownloadRoundtrip 浏览器直下:上传→列表→令牌下载(单文件+多文件 zip)。
+func TestShareDownloadRoundtrip(t *testing.T) {
+	s := &Server{token: "tk", maxUpload: 1 << 20, shares: newShareTable(), mgr: NewManager()}
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+	s.port = port
+
+	// 上传两个文件(走 zip 分支)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for _, name := range []string{"甲.txt", "sub/乙.bin"} {
+		fw, _ := mw.CreateFormFile("file", name)
+		_, _ = fw.Write([]byte("content-of-" + name))
+	}
+	_ = mw.Close()
+	req, _ := http.NewRequest("POST", ts.URL+"/api/share", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-P2PCWEB", "tk")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("share: %d %s", resp.StatusCode, body)
+	}
+	var out struct{ ID, URL, Name string }
+	_ = json.Unmarshal(body, &out)
+
+	// 下载(令牌在 query)
+	dl, err := http.Get(ts.URL + out.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dl.Body.Close() }()
+	if dl.StatusCode != 200 || !strings.Contains(dl.Header.Get("Content-Type"), "zip") {
+		t.Fatalf("下载: %d %s", dl.StatusCode, dl.Header.Get("Content-Type"))
+	}
+	raw := mustReadAll(dl.Body)
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatalf("zip 解析: %v", err)
+	}
+	if len(zr.File) != 2 {
+		t.Fatalf("zip 应含 2 文件,实际 %d", len(zr.File))
+	}
+
+	// 错令牌必须 404
+	bad, _ := http.Get(ts.URL + "/d/" + out.ID + "?t=wrong")
+	_ = bad.Body.Close()
+	if bad.StatusCode != 404 {
+		t.Fatalf("错令牌应 404,实际 %d", bad.StatusCode)
+	}
+}
+
+func mustReadAll(rc io.Reader) []byte {
+	b, _ := io.ReadAll(rc)
+	return b
+}
+

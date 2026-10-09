@@ -196,14 +196,17 @@ func TestWebSendToClientRecv(t *testing.T) {
 		t.Fatal(err)
 	}
 	recvDir := t.TempDir()
-	out, err := rc.Receive(code, recvDir)
+	files, err := rc.Receive(code, recvDir)
 	if err != nil {
 		t.Fatalf("接收失败: %v", err)
 	}
-	if filepath.Base(out) != fileName {
-		t.Errorf("落盘名 %q ≠ 原名 %q", filepath.Base(out), fileName)
+	if len(files) != 1 {
+		t.Fatalf("期望 1 个文件,实际 %d", len(files))
 	}
-	got, err := os.ReadFile(out)
+	if filepath.Base(files[0]) != fileName {
+		t.Errorf("落盘名 %q ≠ 原名 %q", filepath.Base(files[0]), fileName)
+	}
+	got, err := os.ReadFile(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}

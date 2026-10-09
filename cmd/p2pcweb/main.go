@@ -105,6 +105,7 @@ func runServer(o *options) error {
 		noPunch:   o.noPunch,
 		cfg:       newCfgStore(),
 		mgr:       NewManager(),
+		shares:    newShareTable(),
 	}
 	if err := os.MkdirAll(s.outDir, 0o755); err != nil {
 		logf("⚠ 接收目录不可创建 %s: %v（传输时会再报错）", s.outDir, err)

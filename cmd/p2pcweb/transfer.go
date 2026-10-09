@@ -199,16 +199,19 @@ func runTransferChild(o *options) int {
 	}
 	switch o.child {
 	case "send":
-		if _, err := c.Send(o.path, strings.ToUpper(o.code)); err != nil {
+		if _, err := c.Send([]string{o.path}, strings.ToUpper(o.code)); err != nil {
 			return childFail(err)
 		}
 		fmt.Println(doneMarker)
 	case "recv":
-		p, err := c.Receive(strings.ToUpper(strings.TrimSpace(o.code)), o.outDir)
+		files, err := c.Receive(strings.ToUpper(strings.TrimSpace(o.code)), o.outDir)
 		if err != nil {
 			return childFail(err)
 		}
-		fmt.Println(doneMarker + " " + p)
+		if len(files) == 0 {
+			return childFail(fmt.Errorf("未收到文件"))
+		}
+		fmt.Println(doneMarker + " " + files[0])
 	default:
 		return childFail(fmt.Errorf("未知传输子模式 %q", o.child))
 	}
