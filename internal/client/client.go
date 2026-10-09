@@ -267,20 +267,37 @@ func (c *Client) buildCandidates(sock4, sock6 *net.UDPConn, mapped string) *cand
 	return ci
 }
 
-// establish 传输承载建立:快打洞(1.5s)成功即直连;失败且中继可达则先走
-// 中继起传(先通后优),后台长打洞(30s)成功后在文件边界换直连。
-// 全程无中继可用时退回旧语义:打满 PunchBudget 后报错。
+// establish 传输承载建立(双角色状态机):
+//
+//	快打洞(1.5s)双侧独立进行:
+//	  双侧成功 → 发送方监听/接收方拨号,直连(常态);
+//	  仅发送方成功 → 监听等 8s,超时落中继,后台升级(监听窗口 25s+offer)
+//	                等接收方补拨——非对称打洞不再整场失败(真机 215 实测抓出);
+//	  仅接收方成功 → 接收方先拨(8s),失败落中继,后台等 offer 补拨;
+//	  双侧失败   → 中继先行,后台各打 30s 长洞 → offer/补拨 升级。
+//	升级全程不影响已在进行的传输(文件边界 MsgSwap 换源)。
 func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, isSender bool, ch *channel) (*xport, string, error) {
 	k := wire.DeriveKey(session, "cand")
 	fast := c.opt.PunchBudget
 	if fast > 1500*time.Millisecond {
 		fast = 1500 * time.Millisecond
 	}
-	tgt, err := punchDual(sock4, sock6, peer, k, fast, mapped)
-	if err == nil {
-		return c.directX(tgt, session, cert, peer, isSender)
+	tgt, punchErr := punchDual(sock4, sock6, peer, k, fast, mapped)
+
+	if punchErr == nil {
+		remote := peer.pickUDP(famOf(tgt.sock))
+		var x *xport
+		var derr error
+		if isSender {
+			x, derr = establishQUIC(tgt.sock, session, cert, peer.CertFP, nil, true)
+		} else {
+			x, derr = establishQUIC(tgt.sock, session, cert, peer.CertFP, remote, false)
+		}
+		if derr == nil {
+			return x, "quic-direct(" + famOf(tgt.sock) + ")", nil
+		}
+		c.log.Warn("快打洞成功但直连建立失败,落中继+后台升级", "err", derr)
 	}
-	c.log.Info("快速打洞未通", "reason", err.Error())
 
 	// 中继可达性探测(2s):不可用则长打洞兜底(旧行为)
 	relayOK := false
@@ -290,14 +307,25 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 	}
 	if !relayOK {
 		c.log.Info("中继不可用,长打洞兜底", "budget", c.opt.PunchBudget.String())
-		tgt, err = punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped)
-		if err != nil {
-			return nil, "", fmt.Errorf("打洞失败且中继不可用: %w", err)
+		tgt2, err2 := punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped)
+		if err2 != nil {
+			return nil, "", fmt.Errorf("打洞失败且中继不可用: %w", err2)
 		}
-		return c.directX(tgt, session, cert, peer, isSender)
+		var x *xport
+		var derr error
+		if isSender {
+			x, derr = establishQUICBudget(tgt2.sock, session, cert, peer.CertFP, nil, true, c.opt.PunchBudget+5*time.Second)
+		} else {
+			x, derr = establishQUIC(tgt2.sock, session, cert, peer.CertFP, peer.pickUDP(famOf(tgt2.sock)), false)
+		}
+		if derr != nil {
+			_ = tgt2.sock.Close()
+			return nil, "", fmt.Errorf("quic 建立: %w", derr)
+		}
+		return x, "quic-direct(" + famOf(tgt2.sock) + ")", nil
 	}
 
-	// 先通后优:中继立即起传;后台长打洞,成功→换源
+	// 中继先行
 	x, rerr := establishRelay(session, c.relayAddr(), relayToken(session), isSender)
 	if rerr != nil {
 		return nil, "", fmt.Errorf("中继接入失败: %w", rerr)
@@ -305,108 +333,93 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 	if c.opt.DisablePunch || ch == nil {
 		return x, "relay", nil
 	}
-	c.startUpgrade(sw, x, sock4, sock6, mapped, session, cert, peer, isSender, ch, k)
+	if isSender {
+		c.startUpgradeSender(sw, x, sock4, sock6, mapped, session, cert, peer, ch, k, tgt)
+	} else {
+		c.startUpgradeReceiver(sw, x, sock4, sock6, session, cert, ch, k)
+	}
 	return x, "relay(后台升级中)", nil
 }
 
-// directX 从打洞结果建立 QUIC 直连(套接字所有权移交 transport)。
-func (c *Client) directX(tgt *punchTarget, session []byte, cert tls.Certificate, peer *candInfo, isSender bool) (*xport, string, error) {
-	_ = peer
-	x, err := establishQUIC(tgt.sock, session, cert, peer.CertFP, tgt.addr, isSender)
-	if err != nil {
-		_ = tgt.sock.Close()
-		// 打洞成功但 QUIC 失败:回退中继由调用方处理(此处直传报错)
-		return nil, "", fmt.Errorf("quic 建立: %w", err)
+func famOf(sock *net.UDPConn) string {
+	if ip, err := net.ResolveUDPAddr("udp", sock.LocalAddr().String()); err == nil && ip.IP.To4() == nil {
+		return "v6"
 	}
-	fam := "v4"
-	if tgt.sock.LocalAddr().(*net.UDPAddr).IP.To4() == nil {
-		fam = "v6"
-	}
-	return x, "quic-direct(" + fam + ")", nil
+	return "v4"
 }
 
-// startUpgrade 先通后优后台编排:长打洞 → 信令信道交换新候选(中继期映射
-// 已变)→ 双方直连就绪 → 置 arm;发送方在下一文件边界写 MsgSwap 完成换源
-// (数据帧由数据流自身顺序写,wire.Conn 非并发安全)。任一步失败静默放弃
-// (全程留在中继,不影响传输)。信令信道在候选交换后归本协程独占。
-func (c *Client) startUpgrade(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, isSender bool, ch *channel, k [32]byte) {
+// sockOf 按地址族取本端套接字。
+func sockOf(sock4, sock6 *net.UDPConn, family string) *net.UDPConn {
+	if family == "v6" {
+		return sock6
+	}
+	return sock4
+}
+
+// startUpgradeSender 升级编排(发送侧):监听窗口 25s + offer(带新候选);
+// answer 到达即 arm,发送主流程在下一文件边界写 MsgSwap 换源。
+// fastTgt 非空(快打洞成功但接收方未至)时直接复用,否则补打 30s 长洞。
+func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, ch *channel, k [32]byte, fastTgt *punchTarget) {
 	go func() {
-		tgt, err := punchDual(sock4, sock6, peer, k, 30*time.Second, mapped)
-		if err != nil {
-			c.log.Info("后台打洞未通(全程中继)", "reason", err.Error())
+		tgt := fastTgt
+		if tgt == nil {
+			t, err := punchDual(sock4, sock6, peer, k, 30*time.Second, mapped)
+			if err != nil {
+				c.log.Info("后台打洞未通(全程中继)", "reason", err.Error())
+				return
+			}
+			tgt = t
+		}
+		fam := famOf(tgt.sock)
+		ownNew := c.buildCandidates(sock4, sock6, mapped)
+		ownNew.CertFP = peer.CertFP // 复用会话证书(指纹不变)
+		boxed, serr := ownNew.seal(k)
+		if serr != nil {
 			return
 		}
-		fam := "v4"
-		if tgt.sock.LocalAddr().(*net.UDPAddr).IP.To4() == nil {
-			fam = "v6"
+		// 先监听(接收方拨入),offer 随后——顺序不能反(真机踩坑:先 offer
+		// 后监听会让接收方拨号扑空,双侧互相等待超时)
+		dxCh := make(chan *xport, 1)
+		go func() {
+			dx, err := establishQUICBudget(tgt.sock, session, cert, ownNew.CertFP, nil, true, 25*time.Second)
+			if err == nil {
+				dxCh <- dx
+			}
+		}()
+		offer, _ := json.Marshal(map[string]any{"u": "offer", "fam": fam, "cand": boxed})
+		if err := ch.send(offer); err != nil {
+			return
 		}
-		ownNew := c.buildCandidates(sock4, sock6, mapped)
-		ownNew.CertFP = peer.CertFP // 复用会话证书(指纹不变,QUIC 免重协商)
-
-		if isSender {
-			// 发送方:offer{fam} → 等 ready → arm(边界写 MsgSwap 换源)
-			offer, _ := json.Marshal(map[string]any{"u": "offer", "fam": fam})
-			if err := ch.send(offer); err != nil {
-				return
-			}
-			raw, err := ch.recv()
-			if err != nil {
-				return
-			}
-			var resp struct {
-				U    string `json:"u"`
-				Cand []byte `json:"cand"`
-			}
-			if err := json.Unmarshal(raw, &resp); err != nil || resp.U != "ready" {
-				return // nack 或异常:留中继
-			}
-			dx, err := establishQUIC(tgt.sock, session, cert, ownNew.CertFP, nil, true)
-			if err != nil {
-				return
-			}
+		select {
+		case dx := <-dxCh:
 			sw.store(dx)
 			sw.arm()
-			c.log.Info("直连升级就绪(v4 协议文件边界换源)", "family", fam)
-			return
+			c.log.Info("直连升级就绪(文件边界换源)", "family", fam)
+		case <-time.After(30 * time.Second):
+			c.log.Info("升级应答超时(全程中继)", "family", fam)
 		}
+	}()
+}
 
-		// 接收方:等 offer → 自打洞结果匹配族 → dial → ready
+// startUpgradeReceiver 升级编排(接收侧):等 offer(同时自身快/长打洞在
+// establish 已处理),按 offer 族拨发送方新候选,成功回 ready。
+func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, session []byte, cert tls.Certificate, ch *channel, k [32]byte) {
+	go func() {
 		raw, err := ch.recv()
 		if err != nil {
 			return
 		}
 		var offer struct {
-			U   string `json:"u"`
-			Fam string `json:"fam"`
+			U    string          `json:"u"`
+			Fam  string          `json:"fam"`
+			Cand json.RawMessage `json:"cand"`
 		}
 		if err := json.Unmarshal(raw, &offer); err != nil || offer.U != "offer" {
 			return
 		}
-		myFam := ""
-		if tgt.addr.IP.To4() == nil {
-			myFam = "v6"
-		} else {
-			myFam = "v4"
-		}
-		if offer.Fam != myFam {
-			nack, _ := json.Marshal(map[string]any{"u": "nack"})
-			_ = ch.send(nack)
-			return
-		}
-		boxed, sealErr := ownNew.seal(k)
-		if sealErr != nil {
-			return
-		}
-		if err := ch.send(boxed); err != nil {
-			return
-		}
-		// 对端候选:sender 的 fresh 候选经同一信令信道随后到达
-		peerBoxed, perr := ch.recv()
-		if perr != nil {
-			return
-		}
-		plain, perr2 := open(k, peerBoxed)
-		if perr2 != nil {
+		sock := sockOf(sock4, sock6, offer.Fam)
+		plain, oerr := open(k, offer.Cand)
+		if sock == nil || oerr != nil {
 			return
 		}
 		var peerNew candInfo
@@ -417,14 +430,15 @@ func (c *Client) startUpgrade(sw *xswap, relayX *xport, sock4, sock6 *net.UDPCon
 		if remote == nil {
 			return
 		}
-		dx, err := establishQUIC(tgt.sock, session, cert, peerNew.CertFP, remote, false)
-		if err != nil {
+		dx, derr := establishQUIC(sock, session, cert, peerNew.CertFP, remote, false)
+		if derr != nil {
+			c.log.Info("升级拨号失败(留中继)", "err", derr)
 			return
 		}
 		sw.store(dx)
 		ready, _ := json.Marshal(map[string]any{"u": "ready"})
 		_ = ch.send(ready)
-		c.log.Info("直连升级就绪(等待发送方边界换源)", "family", fam)
+		c.log.Info("直连升级拨号完成(等待发送方边界换源)", "family", offer.Fam)
 	}()
 }
 
@@ -436,31 +450,13 @@ func (c *Client) Send(paths []string, code string) (string, error) {
 			return "", err
 		}
 	}
-	// 多注册中心:HRW 排序逐节点 注册+公告,成功即选定信道节点
-	var winner *registryAPI
-	dereg := func() {}
-	chain := c.registryChain(code)
-	for _, base := range chain {
-		reg := newRegistryAPI(base)
-		d := c.setupNode(reg)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		expires := time.Now().Add(15 * time.Minute)
-		err := reg.announce(ctx, c.id, code, expires)
-		cancel()
-		if err == nil {
-			winner, dereg = reg, d
-			break
-		}
-		d()
-		c.log.Warn("注册中心公告失败,顺延下一节点", "base", base, "err", err)
-	}
-	if winner == nil {
-		return "", fmt.Errorf("公告: 全部注册中心不可用(%d 个)", len(chain))
+	dereg, err := c.setupNodeAnnounce(code)
+	if err != nil {
+		return "", err
 	}
 	defer dereg()
-	c.log.Info("直传口令已就绪(等待对端)", "code", code)
 
-	ch, err := joinChannel(winner.base, code, c.id, 10*time.Minute)
+	ch, err := joinChannel(c.opt.Registry, code, c.id, 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
@@ -585,7 +581,28 @@ func (c *Client) Receive(code, dir string) ([]string, error) {
 	return out, nil
 }
 
-// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。
+// setupNodeAnnounce 发送侧合并流程:HRW 链逐节点 注册+公告,成功即选定信道
+// 节点;全败返回报错注销函数。
+func (c *Client) setupNodeAnnounce(code string) (func(), error) {
+	chain := c.registryChain(code)
+	for _, base := range chain {
+		reg := newRegistryAPI(base)
+		d := c.setupNode(reg)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		expires := time.Now().Add(15 * time.Minute)
+		err := reg.announce(ctx, c.id, code, expires)
+		cancel()
+		if err == nil {
+			c.log.Info("公告就绪", "base", base)
+			return d, nil
+		}
+		d()
+		c.log.Warn("注册中心公告失败,顺延下一节点", "base", base, "err", err)
+	}
+	return func() {}, fmt.Errorf("公告: 全部注册中心不可用(%d 个)", len(chain))
+}
+
+// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。
 type discardHandler struct{}
 
 func (discardHandler) Enabled(_ context.Context, _ slog.Level) bool  { return false }

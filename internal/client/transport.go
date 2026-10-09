@@ -117,6 +117,12 @@ func verifyFP(want string) func(rawCerts [][]byte, _ [][]*x509.Certificate) erro
 // 套接字交给 quic.Transport 后不得再用于原始读写(打洞循环须已停止)。
 // 返回控制流 + 数据流工厂(v3 多流)与清理函数。
 func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool) (*xport, error) {
+	return establishQUICBudget(sock, session, cert, peerFP, remote, isSender, 8*time.Second)
+}
+
+// establishQUICBudget 同上,接受/拨号预算可调(先通后优:发送方监听窗口
+// 放宽到升级预算,等接收方补拨)。
+func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool, budget time.Duration) (*xport, error) {
 	tlsBase := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{quicALPN},
@@ -150,7 +156,7 @@ func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peer
 	// 不存在空等;错口令在首个 AEAD 帧解密处暴露。
 	// 接受/拨号预算与打洞预算同量级:打洞结果不对称时(一侧直连一侧
 	// 只能中继),快速失败让双方对齐到中继,避免 15s 级死等
-	opCtx, opCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	opCtx, opCancel := context.WithTimeout(context.Background(), budget)
 	defer opCancel()
 	var stream *quic.Stream
 	var qc *quic.Conn
