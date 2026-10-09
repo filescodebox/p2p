@@ -40,8 +40,25 @@ type xport struct {
 	open   func(ctx context.Context, seg int) (*wire.Conn, error)
 	accept func(ctx context.Context, seg int) (*wire.Conn, error)
 	// direct 是否 QUIC 直传(多流可用)。
-	direct  bool
-	cleanup func()
+	direct bool
+	// peerClosed 对端关闭连接的信号(QUIC 接收侧接入)。QUIC Transport.Close
+	// 不保证在途数据交付——接收方发完 final 帧若立刻拆传输,末帧可能在送达
+	// 前被丢(CI 高载实测:发送方 final 接收 60s idle 超时)。finish() 据此
+	// 等对端先关,再拆本端。
+	peerClosed <-chan struct{}
+	cleanup    func()
+}
+
+// finish 收尾:接收侧先等对端关闭(上限 2s,防对端异常时悬挂)以确保末帧
+// 送达,再拆本端传输;发送侧对端无需再收任何帧,直接拆。
+func (x *xport) finish(isSender bool) {
+	if !isSender && x.peerClosed != nil {
+		select {
+		case <-x.peerClosed:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	x.cleanup()
 }
 
 // segKeyLabel 第 i 条数据流的派生标签。
@@ -172,6 +189,10 @@ func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peer
 		return nil, err
 	}
 	x := &xport{ctrl: ctrl, direct: true, cleanup: func() { _ = tr.Close() }}
+	if !isSender {
+		// 接收侧挂对端关闭信号:final 帧送达后再拆传输(见 xport.peerClosed)
+		x.peerClosed = qc.Context().Done()
+	}
 	if isSender {
 		x.open = func(ctx context.Context, seg int) (*wire.Conn, error) {
 			st, err := qc.OpenStreamSync(ctx)

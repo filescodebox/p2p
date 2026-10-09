@@ -228,7 +228,7 @@ func (c *Client) Send(path string, code string) (string, error) {
 	if err != nil {
 		return code, err
 	}
-	defer x.cleanup()
+	defer x.finish(true)
 	c.log.Info("传输通道建立", "via", via)
 
 	if err := sendFile(x, path, c.progress()); err != nil {
@@ -294,7 +294,7 @@ func (c *Client) Receive(code, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer x.cleanup()
+	defer x.finish(false)
 	c.log.Info("传输通道建立", "via", via)
 
 	out, err := recvFile(x, dir, c.progress())
