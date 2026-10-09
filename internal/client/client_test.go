@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestSendRecvLoopbackPunch(t *testing.T) {
 			errCh <- err
 			return
 		}
-		_, err = c.Send(src, code)
+		_, err = c.Send([]string{src}, code)
 		errCh <- err
 	}()
 
@@ -148,14 +149,14 @@ func TestSendRecvLoopbackPunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := c.Receive(code, recvDir)
+	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
 		t.Fatalf("接收: %v", err)
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
 	}
-	assertSameFile(t, src, out)
+	assertSameFile(t, src, outFiles[0])
 }
 
 func TestSendRecvForcedRelay(t *testing.T) {
@@ -174,7 +175,7 @@ func TestSendRecvForcedRelay(t *testing.T) {
 			errCh <- err
 			return
 		}
-		_, err = c.Send(src, code)
+		_, err = c.Send([]string{src}, code)
 		errCh <- err
 	}()
 
@@ -185,14 +186,14 @@ func TestSendRecvForcedRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := c.Receive(code, recvDir)
+	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
 		t.Fatalf("接收: %v", err)
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
 	}
-	assertSameFile(t, src, out)
+	assertSameFile(t, src, outFiles[0])
 }
 
 func TestSendRecvResumeFromPartial(t *testing.T) {
@@ -221,7 +222,7 @@ func TestSendRecvResumeFromPartial(t *testing.T) {
 			errCh <- err
 			return
 		}
-		_, err = c.Send(src, code)
+		_, err = c.Send([]string{src}, code)
 		errCh <- err
 	}()
 
@@ -232,14 +233,14 @@ func TestSendRecvResumeFromPartial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := c.Receive(code, recvDir)
+	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
 		t.Fatalf("接收: %v", err)
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
 	}
-	assertSameFile(t, src, out)
+	assertSameFile(t, src, outFiles[0])
 }
 
 // TestSendRecvMultiStreamDirect v3 多流并行路径回环 e2e:文件 ≥8MB 阈值
@@ -261,7 +262,7 @@ func TestSendRecvMultiStreamDirect(t *testing.T) {
 			errCh <- err
 			return
 		}
-		_, err = c.Send(src, code)
+		_, err = c.Send([]string{src}, code)
 		errCh <- err
 	}()
 
@@ -272,14 +273,14 @@ func TestSendRecvMultiStreamDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := c.Receive(code, recvDir)
+	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
 		t.Fatalf("接收: %v", err)
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
 	}
-	assertSameFile(t, src, out)
+	assertSameFile(t, src, outFiles[0])
 }
 
 // ---- 小件 ----
@@ -346,9 +347,9 @@ func TestReceiverFirstRace(t *testing.T) {
 			recvErr <- err
 			return
 		}
-		out, err := c.Receive(code, recvDir)
-		if err == nil {
-			t.Logf("received: %s", out)
+		outFiles, err := c.Receive(code, recvDir)
+		if err == nil && len(outFiles) > 0 {
+			t.Logf("received: %s", outFiles[0])
 		}
 		recvErr <- err
 	}()
@@ -364,7 +365,7 @@ func TestReceiverFirstRace(t *testing.T) {
 			sendErr <- err
 			return
 		}
-		_, err = c.Send(src, code)
+		_, err = c.Send([]string{src}, code)
 		sendErr <- err
 	}()
 
@@ -375,4 +376,86 @@ func TestReceiverFirstRace(t *testing.T) {
 		t.Fatalf("发送: %v", err)
 	}
 	assertSameFile(t, src, filepath.Join(recvDir, "race-file.bin"))
+}
+
+// TestSendRecvMultiFileV4 v4 多文件 e2e:混合输入(单文件+目录)+压缩+多流
+// +单遍哈希+部分接受,一次覆盖全部 v4 路径。
+func TestSendRecvMultiFileV4(t *testing.T) {
+	f := newFixture(t, true)
+	code, _ := GenerateCode()
+	sendDir := t.TempDir()
+	recvDir := t.TempDir()
+
+	// 输入:两个散文件 + 一个目录(含子目录)——总量压到 1MB 触发压缩,
+	// 单文件 8MB 触发多流;hashAfter 阈值临时收紧触发单遍哈希
+	big := randomFile(t, sendDir, "big-多流.bin", 8<<20)
+	small := randomFile(t, sendDir, "小文件.txt", 300<<10)
+	sub := filepath.Join(sendDir, "项目目录", "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := randomFile(t, sub, "nested-中文.txt", 120<<10)
+
+	oldHA, oldCT := hashAfterMinTotal, compressMinTotal
+	hashAfterMinTotal = 1 << 20
+	compressMinTotal = 1 << 20
+	defer func() { hashAfterMinTotal, compressMinTotal = oldHA, oldCT }()
+
+	so := testOpts(f, "send")
+	so.PunchBudget = 2 * time.Second // 快速失败→中继先行(顺带覆盖 relay 路径)
+	so.DisablePunch = true
+	errCh := make(chan error, 1)
+	go func() {
+		c, err := New(so)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		_, err = c.Send([]string{big, small, filepath.Join(sendDir, "项目目录")}, code)
+		errCh <- err
+	}()
+
+	waitForAnnounce(t, f.base, code)
+	ro := testOpts(f, "recv")
+	ro.DisablePunch = true
+	// 部分接受:跳过 小文件.txt(ID=1)
+	ro.ChooseFiles = func(mf Manifest) []ManifestEntry {
+		var picked []ManifestEntry
+		for _, e := range mf.Files {
+			if e.Name != "小文件.txt" {
+				picked = append(picked, e)
+			}
+		}
+		return picked
+	}
+	c, err := New(ro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := c.Receive(code, recvDir)
+	if err != nil {
+		t.Fatalf("接收: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("发送: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("部分接受应得 2 个文件,实际 %d: %v", len(files), files)
+	}
+	// 找到两个文件并核对内容(目录结构在接收目录下重现)
+	var bigOut, nestedOut string
+	for _, p := range files {
+		rel, _ := filepath.Rel(recvDir, p)
+		switch {
+		case strings.Contains(rel, "big-多流.bin"):
+			bigOut = p
+		case strings.Contains(rel, "nested-中文.txt"):
+			nestedOut = p
+		}
+	}
+	if bigOut == "" || nestedOut == "" {
+		t.Fatalf("落盘清单缺文件: %v", files)
+	}
+	assertSameFile(t, big, bigOut)
+	assertSameFile(t, nested, nestedOut)
 }

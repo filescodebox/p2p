@@ -4,6 +4,7 @@ go 1.26.9
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	github.com/klauspost/compress v1.20.1
 	github.com/pigeonbox/kit v0.3.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/quic-go/quic-go v0.63.0

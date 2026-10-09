@@ -24,7 +24,7 @@ func TestDebugLoopback(t *testing.T) {
 			errCh <- err
 			return
 		}
-		_, err = c.Send(src, code)
+		_, err = c.Send([]string{src}, code)
 		errCh <- err
 	}()
 	waitForAnnounce(t, f.base, code)
@@ -34,7 +34,7 @@ func TestDebugLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := c.Receive(code, recvDir)
-	t.Logf("receiver: out=%s err=%v", out, err)
+	outFiles, err := c.Receive(code, recvDir)
+	t.Logf("receiver: files=%v err=%v", outFiles, err)
 	t.Logf("sender err: %v", <-errCh)
 }

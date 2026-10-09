@@ -15,7 +15,9 @@ import (
 //
 //	v2 (2026-10-05): 方向标签 nonce 分离+HKDF 派生(破坏性,双端同版)
 //	v3 (2026-10-09): +显式版本协商;QUIC 直传多流并行分段(relay 路径帧格式不变)
-const protoVersion = 3
+//	v4 (2026-10-09): 多文件 manifest 流(逐文件授权/zstd 压缩/单遍哈希/
+//	                  文件边界换源升级);帧上限 1MB(压缩批量)
+const protoVersion = 4
 
 // negotiateVersion 双方互换协议版本帧。两侧先发后收:信令信道双向独立
 // 排队,不会互等死锁;帧序 FIFO 保证先收到对方的版本帧再进入 PAKE。

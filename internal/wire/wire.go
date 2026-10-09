@@ -31,10 +31,17 @@ const (
 	// v3 多流并行(2026-10-09):控制流信令帧 + 数据流分段帧
 	MsgPlan byte = 5 // 发送方→接收方(控制流)：JSON {streams}——将打开的数据流条数
 	MsgSeg  byte = 6 // 发送方→接收方(数据流)：JSON {start}——本流起始偏移,后随 chunk 至流 FIN
+	// v4 多文件 manifest 流(2026-10-09)
+	MsgManifest byte = 7  // 发→收(控制流)：JSON {files:[{id,name,size}],compress,hash_after}
+	MsgAccept   byte = 8  // 收→发(控制流)：JSON {accepted:[id]}——逐文件授权,可部分接受
+	MsgHash     byte = 9  // 发→收(控制流)：JSON {id,sha256}——hash_after 模式的补发全量校验
+	MsgFileAck  byte = 10 // 收→发(控制流)：JSON {id,ok,message}——单文件回执
+	MsgSwap     byte = 11 // 发→收(控制流)：空负载——文件边界换源标记(先通后优直连升级)
 )
 
-// MaxMessageSize 单条消息明文上限（chunk 64KB + 头部裕量）。
-const MaxMessageSize = 256 << 10
+// MaxMessageSize 单条消息明文上限(v4 提升至 1MB:压缩模式 256KB 明文批量
+// + zstd 裕量;不压缩模式仍以 64KB chunk 为主)。
+const MaxMessageSize = 1 << 20
 
 // ErrCorrupt 帧无法解密/格式非法（对端无密钥或流被破坏）。
 var ErrCorrupt = errors.New("wire: 帧校验失败")

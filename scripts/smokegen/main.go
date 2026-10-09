@@ -78,7 +78,7 @@ func runTransfer(base string) error {
 			errCh <- err
 			return
 		}
-		_, err = c.Send(src, code)
+		_, err = c.Send([]string{src}, code)
 		errCh <- err
 	}()
 	// 等公告就绪
@@ -97,14 +97,14 @@ func runTransfer(base string) error {
 	if err != nil {
 		return err
 	}
-	out, err := c.Receive(code, recvDir)
+	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
 		return fmt.Errorf("接收: %w", err)
 	}
 	if err := <-errCh; err != nil {
 		return fmt.Errorf("发送: %w", err)
 	}
-	got, err := os.ReadFile(out)
+	got, err := os.ReadFile(outFiles[0])
 	if err != nil {
 		return err
 	}
